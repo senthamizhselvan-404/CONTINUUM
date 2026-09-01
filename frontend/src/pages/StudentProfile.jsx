@@ -1,14 +1,16 @@
 import React, { useState } from "react";
-import { useQuery } from "@tanstack/react-query";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { useParams, useNavigate } from "react-router-dom";
 import {
   ResponsiveContainer, ComposedChart, Line, XAxis, YAxis, CartesianGrid, Tooltip,
   ReferenceArea, RadarChart, PolarGrid, PolarAngleAxis, Radar as RRadar,
 } from "recharts";
-import { ArrowLeft, Clock, PenLine, TrendingDown, Layers } from "lucide-react";
+import { ArrowLeft, Clock, PenLine, TrendingDown, Layers, Plus, Upload } from "lucide-react";
 import api from "@/lib/api";
 import { PageHeader, Loading, BandBadge, StudentAvatar, SeverityBadge, StatusBadge, ChartCard, TrustBanner } from "@/components/common";
 import { DeviationIndex } from "@/components/DeviationIndex";
+import { Button } from "@/components/ui/button";
+import { AddRecordModal, UploadRecordsModal } from "@/components/StudentDataModals";
 import { cn } from "@/lib/utils";
 
 const TIP = { background: "hsl(var(--popover))", border: "1px solid hsl(var(--border))", borderRadius: 8, fontSize: 12, color: "hsl(var(--foreground))" };
@@ -36,7 +38,10 @@ function BaselineRow({ label, historical, current }) {
 export default function StudentProfile() {
   const { id } = useParams();
   const nav = useNavigate();
+  const qc = useQueryClient();
   const [activeSem, setActiveSem] = useState(4);
+  const [addRecOpen, setAddRecOpen] = useState(false);
+  const [uploadOpen, setUploadOpen] = useState(false);
   const { data: s, isLoading } = useQuery({ queryKey: ["student", id], queryFn: async () => (await api.get(`/students/${id}`)).data });
 
   if (isLoading || !s) return <Loading />;
@@ -45,7 +50,8 @@ export default function StudentProfile() {
   const perfData = perf.series.map((v, i) => ({ semester: `S${i + 1}`, score: v }));
   const [lo, hi] = perf.historical_range;
   const radarData = s.writing_features.map((f) => ({ feature: f.feature.split(" ")[0], historical: f.historical, current: f.current }));
-  const sem = s.semesters[activeSem];
+  const semIdx = Math.min(activeSem, s.semesters.length - 1);
+  const sem = s.semesters[semIdx];
 
   return (
     <div className="space-y-6">
@@ -69,9 +75,13 @@ export default function StudentProfile() {
             </div>
           </div>
           <div className="text-sm text-muted-foreground max-w-xs">
-            <span className="text-xs font-semibold uppercase tracking-wider text-primary">Status</span>
+            <span className="text-xs font-semibold uppercase tracking-wider text-primary">Overall Behavioral Status</span>
             <p className="text-foreground font-medium mt-1">{s.status_label}</p>
             <p className="text-xs mt-1">This academic history is viewed as one continuous behavioral system.</p>
+            <div className="flex flex-wrap gap-2 mt-3">
+              <Button size="sm" className="gap-1.5" onClick={() => setAddRecOpen(true)} data-testid="add-student-data-btn"><Plus className="h-3.5 w-3.5" /> Add Student Data</Button>
+              <Button size="sm" variant="outline" className="gap-1.5" onClick={() => setUploadOpen(true)} data-testid="upload-records-btn"><Upload className="h-3.5 w-3.5" /> Upload Records</Button>
+            </div>
           </div>
         </div>
       </div>
@@ -83,9 +93,9 @@ export default function StudentProfile() {
         subtitle="One student → five semesters → one continuous profile. Click a semester to inspect.">
         <div className="relative pt-2 pb-1">
           <div className="absolute left-0 right-0 top-7 h-0.5 bg-border" />
-          <div className="relative grid grid-cols-5 gap-2">
+          <div className="relative gap-2" style={{ display: "grid", gridTemplateColumns: `repeat(${s.semesters.length}, minmax(0,1fr))` }}>
             {s.semesters.map((sm, i) => {
-              const active = i === activeSem;
+              const active = i === semIdx;
               const tone = sm.stability === "Significant" ? "bg-rose-500" : sm.stability === "Moderate" ? "bg-amber-500" : "bg-emerald-500";
               return (
                 <button key={sm.id} data-testid={`timeline-sem-${i + 1}`} onClick={() => setActiveSem(i)} className="flex flex-col items-center group">
@@ -193,6 +203,52 @@ export default function StudentProfile() {
         </ChartCard>
       </div>
 
+      {/* Academic history + submission audit */}
+      <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+        <ChartCard testid="academic-history" title="Academic History" subtitle="Semester · course · grade · assignments">
+          {s.academic_history.length === 0 ? <p className="text-sm text-muted-foreground py-4">No academic records yet.</p> : (
+            <div className="overflow-x-auto max-h-72 overflow-y-auto">
+              <table className="w-full text-sm">
+                <thead><tr className="text-left text-xs text-muted-foreground border-b border-border sticky top-0 bg-card">
+                  <th className="py-2 px-2">Semester</th><th className="py-2 px-2">Course</th><th className="py-2 px-2">Grade</th><th className="py-2 px-2">Assignments</th></tr></thead>
+                <tbody>
+                  {s.academic_history.map((h, i) => (
+                    <tr key={i} className="border-b border-border/50 last:border-0">
+                      <td className="py-2 px-2 text-muted-foreground">{h.semester}</td>
+                      <td className="py-2 px-2 font-mono text-xs">{h.course_code}</td>
+                      <td className="py-2 px-2 font-semibold tabular-nums">{h.grade ?? "—"}</td>
+                      <td className="py-2 px-2 tabular-nums">{h.assignments}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          )}
+        </ChartCard>
+        <ChartCard testid="submission-audit" title="Submission Audit" subtitle="Submission time vs deadline">
+          {s.submissions.length === 0 ? <p className="text-sm text-muted-foreground py-4">No submission-timing data for this student.</p> : (
+            <div className="overflow-x-auto max-h-72 overflow-y-auto">
+              <table className="w-full text-sm">
+                <thead><tr className="text-left text-xs text-muted-foreground border-b border-border sticky top-0 bg-card">
+                  <th className="py-2 px-2">Assignment</th><th className="py-2 px-2">Submitted</th><th className="py-2 px-2">Before deadline</th><th className="py-2 px-2">Pattern</th></tr></thead>
+                <tbody>
+                  {s.submissions.map((sub, i) => (
+                    <tr key={i} className="border-b border-border/50 last:border-0">
+                      <td className="py-2 px-2">{sub.assignment}</td>
+                      <td className="py-2 px-2 text-xs text-muted-foreground">{sub.submitted}</td>
+                      <td className="py-2 px-2 tabular-nums">{sub.hours_before != null ? `${sub.hours_before}h` : "—"}</td>
+                      <td className="py-2 px-2">{sub.pattern === "Near deadline"
+                        ? <span className="text-amber-400 text-xs">Near deadline</span>
+                        : <span className="text-muted-foreground text-xs">{sub.pattern}</span>}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          )}
+        </ChartCard>
+      </div>
+
       {/* Signals list */}
       <ChartCard testid="student-signals" title="Signals" subtitle="Behavioral deviations surfaced for review">
         {s.signals.length === 0 ? (
@@ -216,7 +272,27 @@ export default function StudentProfile() {
         )}
       </ChartCard>
 
+      <ChartCard testid="student-audit-trail" title="Review History & Audit Trail" subtitle="Every reviewer action on this student is recorded">
+        {(!s.audit_trail || s.audit_trail.length === 0) ? <p className="text-sm text-muted-foreground py-4">No audit events yet.</p> : (
+          <div className="relative pl-4 space-y-4 before:absolute before:left-1 before:top-1 before:bottom-1 before:w-px before:bg-border">
+            {s.audit_trail.map((e) => (
+              <div key={e.id} className="relative">
+                <span className="absolute -left-[13px] top-1 h-2.5 w-2.5 rounded-full bg-primary ring-4 ring-card" />
+                <div className="flex items-center justify-between gap-2">
+                  <span className="text-sm font-medium text-foreground">{e.action}</span>
+                  <span className="text-xs text-muted-foreground">{e.timestamp}</span>
+                </div>
+                <p className="text-xs text-muted-foreground mt-0.5">{e.description} · {e.user}</p>
+              </div>
+            ))}
+          </div>
+        )}
+      </ChartCard>
+
       <TrustBanner />
+
+      <AddRecordModal open={addRecOpen} onOpenChange={setAddRecOpen} studentId={s.id} onSaved={() => qc.invalidateQueries({ queryKey: ["student", id] })} />
+      <UploadRecordsModal open={uploadOpen} onOpenChange={setUploadOpen} studentId={s.id} onSaved={() => qc.invalidateQueries({ queryKey: ["student", id] })} />
     </div>
   );
 }

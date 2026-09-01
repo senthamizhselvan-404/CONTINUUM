@@ -1,20 +1,24 @@
 import React, { useState } from "react";
-import { useQuery, keepPreviousData } from "@tanstack/react-query";
+import { useQuery, keepPreviousData, useQueryClient } from "@tanstack/react-query";
 import { useNavigate } from "react-router-dom";
-import { ChevronLeft, ChevronRight, ArrowUpDown } from "lucide-react";
+import { ChevronLeft, ChevronRight, ArrowUpDown, UserPlus, Upload, Sparkles } from "lucide-react";
 import api from "@/lib/api";
 import { PageHeader, Loading, BandBadge, StudentAvatar, TrendIcon, EmptyState } from "@/components/common";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Button } from "@/components/ui/button";
+import { AddStudentModal, ImportStudentsModal } from "@/components/StudentDataModals";
 
 export default function Students() {
   const nav = useNavigate();
+  const qc = useQueryClient();
   const [q, setQ] = useState("");
   const [status, setStatus] = useState("all");
   const [program, setProgram] = useState("all");
   const [sort, setSort] = useState("deviation");
   const [order, setOrder] = useState("desc");
   const [page, setPage] = useState(1);
+  const [addOpen, setAddOpen] = useState(false);
+  const [importOpen, setImportOpen] = useState(false);
   const pageSize = 12;
 
   const { data, isLoading } = useQuery({
@@ -22,6 +26,8 @@ export default function Students() {
     queryFn: async () => (await api.get("/students", { params: { q, status, program, sort, order, page, page_size: pageSize } })).data,
     placeholderData: keepPreviousData,
   });
+
+  const refresh = () => { qc.invalidateQueries({ queryKey: ["students"] }); qc.invalidateQueries({ queryKey: ["students-stats"] }); qc.invalidateQueries({ queryKey: ["overview"] }); };
 
   const toggleSort = (key) => {
     if (sort === key) setOrder((o) => (o === "desc" ? "asc" : "desc"));
@@ -31,11 +37,42 @@ export default function Students() {
 
   const total = data?.total || 0;
   const pages = Math.max(1, Math.ceil(total / pageSize));
+  const emptyWorkspace = !isLoading && total === 0 && !q && status === "all" && program === "all";
+
+  const modals = (
+    <>
+      <AddStudentModal open={addOpen} onOpenChange={setAddOpen} onCreated={refresh} />
+      <ImportStudentsModal open={importOpen} onOpenChange={setImportOpen} onDone={refresh} />
+    </>
+  );
+
+  if (emptyWorkspace) {
+    return (
+      <div className="space-y-6">
+        <PageHeader testid="students-header" title="Students" subtitle="Monitor longitudinal academic behavior across your institution." />
+        <div className="rounded-xl border border-border bg-card grid-texture">
+          <EmptyState testid="empty-workspace" icon={Sparkles} title="Your Continuum workspace is ready."
+            description="Add students or import academic records to begin building longitudinal profiles."
+            action={
+              <div className="flex flex-wrap gap-2 justify-center">
+                <Button className="gap-2" onClick={() => setAddOpen(true)} data-testid="empty-add-student"><UserPlus className="h-4 w-4" /> Add Student</Button>
+                <Button variant="outline" className="gap-2" onClick={() => setImportOpen(true)} data-testid="empty-import"><Upload className="h-4 w-4" /> Import Student Data</Button>
+                <Button variant="outline" className="gap-2" onClick={() => setImportOpen(true)} data-testid="empty-demo"><Sparkles className="h-4 w-4" /> Explore Demo Dataset</Button>
+              </div>
+            } />
+        </div>
+        {modals}
+      </div>
+    );
+  }
 
   return (
     <div className="space-y-6">
       <PageHeader testid="students-header" title="Students"
-        subtitle="Every student viewed as one continuous behavioral profile across their academic journey." />
+        subtitle="Monitor longitudinal academic behavior across your institution.">
+        <Button variant="outline" className="gap-2" onClick={() => setImportOpen(true)} data-testid="import-students-btn"><Upload className="h-4 w-4" /> Import Data</Button>
+        <Button className="gap-2" onClick={() => setAddOpen(true)} data-testid="add-student-btn"><UserPlus className="h-4 w-4" /> Add Student</Button>
+      </PageHeader>
 
       <div className="flex flex-col sm:flex-row gap-3">
         <input data-testid="students-search" value={q} onChange={(e) => { setQ(e.target.value); setPage(1); }}
@@ -114,6 +151,7 @@ export default function Students() {
           </div>
         </div>
       </div>
+      {modals}
     </div>
   );
 }

@@ -1,0 +1,51 @@
+{
+  "summary": "Iteration 2: New reviewer data-management features tested end-to-end. Backend: 13/13 pytest cases pass (POST /api/students success/409/400; GET /api/students/import/template returns CSV with correct header; POST preview no-persist + summary counts; POST commit create-then-update idempotency (2nd import updates, 0 duplicates); POST /students/import/demo; POST /students/{id}/records appends + recomputes + audit; POST /students/{id}/records/import; GET /api/students-stats keys; audit-log reflects student-added; regression: Arjun profile intact + LLM /signals/{id}/explain still works). Frontend: Enter Demo login lands on dashboard; Students page Add Student flow (STU-UI-...) shows success + Open Student Profile CTA; student profile Add Academic Record shows 'Student audit updated' toast; Upload Records modal opens; Import modal shows Download Template + Use Demo Dataset + Dropzone; CSV upload renders 'Review Data Before Import' preview with 'New' tags; Commit fires success toast; Students search finds Arjun. HOWEVER — /api/dashboard entry point (Dashboard.jsx) is broken because /api/overview now returns 500 (IndexError) whenever ANY reviewer-created student (that lacks a full performance.series matching semesters) is in the DB.",
+  "backend_issues": {
+    "critical": [
+      {
+        "endpoint": "GET /api/overview",
+        "issue": "IndexError: list index out of range at server.py line ~184 `perf[i] - base`. Reviewer-created / imported students created by _new_student_doc + add_student do NOT have performance.series with len == number of semesters (5). Once any such student exists in the DB, /api/overview 500s for every user and the Dashboard page hangs on skeleton loaders. Reproducible: POST /api/students {student_id, full_name} then GET /api/overview -> 500.",
+        "priority": "CRITICAL"
+      }
+    ],
+    "minor": []
+  },
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [
+      {
+        "flow": "Dashboard load",
+        "issue": "Dashboard skeleton never resolves because /api/overview returns 500 (root cause: same as backend critical). Dashboard 'Students' section (Total/Added This Month/Active Signals/Require Review/Recent Activity) and 'Signals Requiring Attention' therefore not visible after any student add/import.",
+        "affected_selectors": ["[data-testid=\"dash-add-student-btn\"]", "[data-testid=\"dash-import-btn\"]", "[data-testid=\"activity-0\"]"]
+      }
+    ],
+    "design_issues": []
+  },
+  "test_report_links": [
+    "/app/backend/tests/test_reviewer_data_mgmt.py",
+    "/app/test_reports/pytest/iter2_reviewer_data.xml"
+  ],
+  "action_items": [
+    "Fix /api/overview to tolerate students with short/missing performance.series. Guard: `perf = (s.get('performance') or {}).get('series') or []; if i >= len(perf): continue` — or precompute a padded series in _recompute_and_store so every student always has performance.series length == len(semesters).",
+    "Consider making _new_student_doc / add_student initialize `performance = {'series': [None]*len(semesters), 'label': 'Baseline'}` and skip Nones in overview aggregation."
+  ],
+  "critical_code_review_comments": [
+    "server.py /api/overview does not defensively handle heterogeneous student docs; it assumes every student has performance.series[0..len(semesters)-1]. Fragile.",
+    "server.py _new_student_doc / add_student create students without performance/baseline/writing_features/submission_behavior/semesters fields, but list_students projection excludes those. However /api/overview reads performance and blows up. Contract between engine.recompute() output shape and overview.py aggregation is not enforced.",
+    "server.py: two @app.on_event handlers still use deprecated startup/shutdown API (carried over from iter 1).",
+    "student_engine.recompute() output shape is not documented/type-hinted — a Pydantic model or TypedDict would prevent this kind of shape drift.",
+    "import_utils.parse_upload accepts arbitrary CSV — no size limit / row cap; potential DoS surface (low priority for demo)."
+  ],
+  "updated_files": [
+    "/app/backend/tests/test_reviewer_data_mgmt.py",
+    "/app/test_reports/iteration_2.json",
+    "/app/test_reports/pytest/iter2_reviewer_data.xml"
+  ],
+  "success_rate": {"backend": "100% on new-feature endpoints (13/13) but /api/overview regression is a CRITICAL side-effect (dashboard broken)", "frontend": "100% of new-feature flows verified (Add / Import / Preview / Commit / Record / Upload); Dashboard broken due to backend /overview 500"},
+  "test_credentials": "POST /api/auth/demo — Alex Morgan, demo@continuum.edu. Frontend: [data-testid=enter-demo-button].",
+  "seed_data_creation": "Tests create TEST_-prefixed students via POST /api/students and POST /api/students/import/commit with unique STU-TEST-*, STU-IMP-*, STU-CMT-*, STU-REC-*, STU-AUD-* ids. Not cleaned up; safe because ids are UUID-suffixed. Note: these newly-added students trigger the /api/overview 500.",
+  "retest_needed": true,
+  "should_main_agent_self_test": false,
+  "context_for_next_testing_agent": "New reviewer flows fully covered by /app/backend/tests/test_reviewer_data_mgmt.py (13 tests, ~9s). Existing iter-1 suite at /app/backend/tests/backend_test.py still works. Known critical regression: /api/overview 500 whenever any student without full performance.series is in DB — verify after main-agent fix by hitting /api/overview after POST /api/students and expecting 200. Frontend Dashboard sits on skeletons until /overview is fixed; Students, Student Profile, Import modal, and record flows are all functional. Do NOT upload records onto Arjun (STU-2024-1001) — his profile uses curated analytics without academic_records.",
+  "rca of the issue": "server.py /api/overview iterates i in range(len(semesters)) and reads student['performance']['series'][i] for every student. Students created via the new reviewer endpoints (add_student, import/commit, import/demo, _new_student_doc) go through _recompute_and_store -> student_engine.recompute(), which returns a performance dict whose 'series' length equals the number of semesters the student actually has records for — typically 1-3, not 5. When /api/overview loops i=0..4, perf[3] or perf[4] raises IndexError, returning 500. Reproduce: (1) POST /api/auth/demo, (2) POST /api/students {'student_id':'STU-BUG-1','full_name':'X'}, (3) GET /api/overview -> 500. Mitigation options: (a) in server.py overview, replace `dev = abs(perf[i] - base) / base * 100 if base else 0` with `dev = (abs(perf[i] - base) / base * 100) if (base and i < len(perf) and perf[i] is not None) else 0` and skip when out-of-range; (b) in student_engine.recompute() pad performance.series with the current-semester value (or None) to always equal len(semesters); (c) at _new_student_doc creation time, initialize performance = {'series':[None]*NUM_SEMESTERS,'label':'Baseline'} and have overview treat None as 'no contribution'."
+}

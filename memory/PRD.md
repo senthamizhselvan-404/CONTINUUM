@@ -34,6 +34,12 @@ Build CONTINUUM, an investor-facing academic-integrity SaaS MVP. Tagline: "Acade
 - Analytics are deterministic synthetic, not a validated detector (labeled "Prototype").
 - Demo endpoint is open (fine for investor demo; gate/rate-limit for prod).
 
+## Iteration 2 (2026-06) — Reviewer is the operator
+- Reviewer adds/imports/manages student data from inside the dashboard (no student portal).
+- Backend: student_engine.py recomputes longitudinal analytics + generates explainable signals from RAW records (grades, submission timing, stylometry). import_utils.py parses CSV/XLSX, builds template, summarizes new-vs-existing. Endpoints: POST /students, GET /students/import/template, POST /students/import/preview|commit|demo, POST /students/{id}/records, POST /students/{id}/records/import, GET /students-stats. Imports APPEND (never overwrite) keyed by student_id; analytics recompute on every change; audit + activity logged.
+- Frontend: AddStudentModal, ImportStudentsModal (drag-drop + preview + New/Existing + demo + template), AddRecordModal, UploadRecordsModal. Students empty-workspace state; Student profile Academic History + Submission Audit + Review History/Audit Trail + Add/Upload actions; Dashboard Students workspace section + Recent Activity.
+- Tested 13/13 new endpoints + frontend flows. Fixed CRITICAL /api/overview IndexError (tolerates short performance.series). Demo reset clears student_activity.
+
 ## Backlog / next production steps
 - P1: Replace analytics engine with real ML feature pipeline; live data-source connectors.
 - P1: RBAC enforcement per role (owner/dept admin/reviewer/faculty) + department scoping.

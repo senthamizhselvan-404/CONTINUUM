@@ -1,4 +1,4 @@
-from fastapi import FastAPI, APIRouter, Request, Response, HTTPException, Depends, Query
+from fastapi import FastAPI, APIRouter, Request, Response, HTTPException, Depends, Query, UploadFile, File
 from dotenv import load_dotenv
 from starlette.middleware.cors import CORSMiddleware
 from motor.motor_asyncio import AsyncIOMotorClient
@@ -10,9 +10,12 @@ from pathlib import Path
 from datetime import datetime, timezone, timedelta
 from typing import Optional
 
+import statistics
 import seed_data
 import llm_service
 import analytics_engine as ae
+import student_engine
+import import_utils
 
 ROOT_DIR = Path(__file__).parent
 load_dotenv(ROOT_DIR / '.env')
@@ -39,7 +42,8 @@ async def ensure_seed(force: bool = False):
     data = seed_data.build_all()
     if force:
         for col in ["institution", "departments", "courses", "semesters", "students",
-                    "signals", "reviews", "audit_events", "data_sources", "settings"]:
+                    "signals", "reviews", "audit_events", "data_sources", "settings",
+                    "student_activity"]:
             await db[col].delete_many({})
     await db.institution.insert_one(data["institution"])
     await db.departments.insert_many(data["departments"])
@@ -176,8 +180,10 @@ async def overview(user: dict = Depends(get_current_user)):
     for i, sem in enumerate(semesters):
         vals = []
         for s in students:
-            perf = s["performance"]["series"]
-            base = sum(perf[:-1]) / max(1, len(perf) - 1)
+            perf = (s.get("performance") or {}).get("series") or []
+            if i >= len(perf) or perf[i] is None:
+                continue
+            base = sum(perf[:-1]) / max(1, len(perf) - 1) if len(perf) > 1 else perf[0]
             dev = abs(perf[i] - base) / base * 100 if base else 0
             vals.append(min(dev * 1.4, 100))
         avg = round(sum(vals) / len(vals), 1) if vals else 0
@@ -185,7 +191,7 @@ async def overview(user: dict = Depends(get_current_user)):
                        "deviation": avg, "high": round(avg + 12, 1)})
     signals = await db.signals.find({}, CLEAN).to_list(1000)
     recent = sorted([s for s in signals if s["status"] in ("New", "Under Review", "Needs Follow-up")],
-                    key=lambda x: x["detected_iso"], reverse=True)[:5]
+                    key=lambda x: x.get("detected_iso", ""), reverse=True)[:5]
     # signal distribution
     dist = {}
     for s in signals:
@@ -219,13 +225,30 @@ async def list_students(user: dict = Depends(get_current_user),
             "students": docs[start:start + page_size]}
 
 
+@api.get("/students-stats")
+async def students_stats(user: dict = Depends(get_current_user)):
+    total = await db.students.count_documents({})
+    month_prefix = datetime.now(timezone.utc).strftime("%Y-%m")
+    new_month = await db.students.count_documents({"created_at": {"$regex": f"^{month_prefix}"}})
+    active = await db.signals.count_documents({"status": {"$in": ["New", "Under Review", "Needs Follow-up"]}})
+    require = await db.signals.count_documents({"status": {"$in": ["New", "Needs Follow-up"]}})
+    with_signals = len(await db.signals.distinct("student_id"))
+    acts = await db.student_activity.find({}, CLEAN).sort("iso", -1).to_list(8)
+    return {"total": total, "new_this_month": new_month, "active_signals": active,
+            "require_review": require, "with_signals": with_signals, "recent_activity": acts}
+
+
 @api.get("/students/{student_id}")
 async def get_student(student_id: str, user: dict = Depends(get_current_user)):
     s = await db.students.find_one({"id": student_id}, CLEAN)
     if not s:
         raise HTTPException(status_code=404, detail="Student not found")
     sigs = await db.signals.find({"student_id": student_id}, CLEAN).to_list(50)
-    s["signals"] = sorted(sigs, key=lambda x: x["detected_iso"], reverse=True)
+    s["signals"] = sorted(sigs, key=lambda x: x.get("detected_iso", ""), reverse=True)
+    hist, subs = _student_history(s)
+    s["academic_history"] = hist
+    s["submissions"] = subs
+    s["audit_trail"] = await db.audit_events.find({"student_id": student_id}, CLEAN).sort("iso", -1).to_list(200)
     return s
 
 
@@ -490,13 +513,265 @@ async def reset_demo(user: dict = Depends(get_current_user)):
     return {"ok": True}
 
 
+# ---------------------------------------------------------------- reviewer data mgmt
+def _dept_id(name):
+    for d in seed_data.DEPARTMENTS:
+        if d["name"].lower() == (name or "").lower():
+            return d["id"]
+    return "dep_cs"
+
+
+def _clean_record(r):
+    return {k: r.get(k) for k in ["semester", "course_code", "course_name", "assignment_name",
+                                   "submission_timestamp", "deadline_timestamp", "grade", "writing_sample"]}
+
+
+def _prep(recs):
+    return [{**r, "_sub_dt": import_utils._parse_dt(r.get("submission_timestamp")),
+             "_dl_dt": import_utils._parse_dt(r.get("deadline_timestamp"))} for r in recs]
+
+
+async def _get_thresholds():
+    s = await db.settings.find_one({"_key": "global"}, {"_id": 0})
+    return (s or {}).get("thresholds")
+
+
+def _student_history(s):
+    recs = s.get("academic_records")
+    hist, subs = [], []
+    if recs:
+        agg = {}
+        for r in recs:
+            n = student_engine.sem_num(r.get("semester"))
+            code = r.get("course_code") or "—"
+            key = (n, code)
+            agg.setdefault(key, {"semester": student_engine.sem_label(n), "course_code": code,
+                                 "course_name": r.get("course_name") or code, "grades": [], "assignments": 0})
+            agg[key]["assignments"] += 1
+            if r.get("grade") not in (None, ""):
+                agg[key]["grades"].append(float(r["grade"]))
+            sub = import_utils._parse_dt(r.get("submission_timestamp"))
+            dl = import_utils._parse_dt(r.get("deadline_timestamp"))
+            hrs = student_engine._hours_before(sub, dl)
+            subs.append({"assignment": r.get("assignment_name") or "—", "course": code,
+                         "submitted": r.get("submission_timestamp") or "—",
+                         "deadline": r.get("deadline_timestamp") or "—", "hours_before": hrs,
+                         "pattern": ("Near deadline" if hrs is not None and hrs < 2 else
+                                     "Typical" if hrs is not None else "—")})
+        for (n, code), v in sorted(agg.items()):
+            avg = round(statistics.mean(v["grades"])) if v["grades"] else None
+            hist.append({"semester": v["semester"], "course_code": code, "course_name": v["course_name"],
+                         "grade": avg, "assignments": v["assignments"], "avg": avg})
+    else:
+        for sem in s.get("semesters", []):
+            for c in sem.get("courses", []):
+                hist.append({"semester": sem["label"], "course_code": c["code"], "course_name": c["name"],
+                             "grade": c["grade"], "assignments": "—", "avg": c["grade"]})
+    return hist, subs
+
+
+def _new_student_doc(sid, meta, records):
+    name = meta.get("student_name") or sid
+    yr = meta.get("year")
+    year = int(yr) if yr and str(yr).strip().isdigit() else 1
+    return {
+        "id": uuid.uuid4().hex[:10], "student_id": sid, "name": name, "email": meta.get("email"),
+        "program": meta.get("program") or "Computer Science", "dept_id": _dept_id(meta.get("department")),
+        "year": year, "avatar": seed_data._avatar(name), "featured": False, "record_driven": True,
+        "academic_records": records, "signal_count": 0,
+        "current_semester": max([student_engine.sem_num(r.get("semester")) for r in records] or [1]),
+        "current_gpa": None,
+        "last_activity": datetime.now(timezone.utc).strftime("%d %b %Y"),
+        "created_at": datetime.now(timezone.utc).isoformat(),
+    }
+
+
+async def _activity(student, text):
+    await db.student_activity.insert_one({
+        "student_id": student["id"], "student_name": student["name"], "text": text,
+        "timestamp": datetime.now(timezone.utc).strftime("%d %b %Y, %H:%M"),
+        "iso": datetime.now(timezone.utc).isoformat(),
+    })
+
+
+async def _recompute_and_store(student):
+    """Run the analytics pipeline from raw records and persist analytics + signals."""
+    thresholds = await _get_thresholds()
+    prepared = _prep(student.get("academic_records", []))
+    result = student_engine.recompute(student, prepared, thresholds)
+    gen = result.pop("generated_signals", [])
+    student.update(result)
+    student.pop("_id", None)
+    await db.students.update_one({"id": student["id"]}, {"$set": student}, upsert=True)
+    await db.signals.delete_many({"student_id": student["id"], "source": "engine"})
+    now = datetime.now(timezone.utc)
+    made = []
+    for g in gen:
+        sig_id = f"SIG-ENG-{uuid.uuid4().hex[:6]}"
+        doc = {"id": sig_id, "student_id": student["id"], "student_name": student["name"],
+               "student_avatar": student["avatar"], "program": student["program"],
+               "detected": now.strftime("%d %b %Y"), "detected_iso": now.isoformat(), "source": "engine",
+               "evidence": [
+                   {"label": "Historical baseline", "value": "Prior semesters"},
+                   {"label": "Current observation", "value": "Most recent semester"},
+                   {"label": "Writing-style deviation", "value": f"{g['factors']['writing']}%"},
+                   {"label": "Submission-pattern deviation", "value": f"{g['factors']['submission']}%"},
+                   {"label": "Performance deviation", "value": f"{g['factors']['performance']}%"}],
+               **g}
+        await db.signals.insert_one(doc)
+        made.append(sig_id)
+    cnt = await db.signals.count_documents({"student_id": student["id"]})
+    await db.students.update_one({"id": student["id"]}, {"$set": {"signal_count": cnt}})
+    return made
+
+
+async def _ingest_rows(rows, user):
+    groups = {}
+    for r in rows:
+        groups.setdefault(r["student_id"], []).append(r)
+    created = updated = sigs = 0
+    for sid, recs in groups.items():
+        clean = [_clean_record(r) for r in recs]
+        existing = await db.students.find_one({"student_id": sid}, CLEAN)
+        if existing:
+            existing["academic_records"] = existing.get("academic_records", []) + clean
+            existing.setdefault("record_driven", True)
+            made = await _recompute_and_store(existing)
+            updated += 1
+            sigs += len(made)
+            await _audit(user, "Student data updated", existing["id"],
+                         f"Appended {len(clean)} record(s) to {existing['name']}; behavioral baseline recalculated.",
+                         student_id=existing["id"])
+            await _activity(existing, f"{len(clean)} academic record(s) added — baseline recalculated")
+        else:
+            student = _new_student_doc(sid, recs[0], clean)
+            await db.students.insert_one(student)
+            student.pop("_id", None)
+            made = await _recompute_and_store(student)
+            created += 1
+            sigs += len(made)
+            await _audit(user, "Student added", student["id"],
+                         f"Imported student {student['name']} ({sid}).", student_id=student["id"])
+            await _activity(student, "Student profile created via import")
+    return {"created": created, "updated": updated, "signals_generated": sigs, "students": created + updated}
+
+
+@api.post("/students")
+async def add_student(request: Request, user: dict = Depends(get_current_user)):
+    b = await request.json()
+    sid = (b.get("student_id") or "").strip()
+    if not sid or not b.get("full_name"):
+        raise HTTPException(status_code=400, detail="student_id and full_name are required")
+    if await db.students.find_one({"student_id": sid}):
+        raise HTTPException(status_code=409, detail="A student with this Student ID already exists")
+    student = {
+        "id": uuid.uuid4().hex[:10], "student_id": sid, "name": b["full_name"].strip(),
+        "email": b.get("email"), "program": b.get("program") or "Computer Science",
+        "dept_id": _dept_id(b.get("department")), "year": int(b.get("year") or 1),
+        "avatar": seed_data._avatar(b["full_name"]), "featured": False, "record_driven": True,
+        "advisor": b.get("advisor"), "enrollment_date": b.get("enrollment_date"),
+        "current_semester": int(b.get("current_semester") or 1),
+        "current_gpa": float(b["current_gpa"]) if b.get("current_gpa") else None,
+        "academic_records": [], "signal_count": 0,
+        "last_activity": datetime.now(timezone.utc).strftime("%d %b %Y"),
+        "created_at": datetime.now(timezone.utc).isoformat(),
+    }
+    await db.students.insert_one(student)
+    student.pop("_id", None)
+    await _recompute_and_store(student)
+    await _audit(user, "Student added", student["id"],
+                 f"Added student {student['name']} ({sid}).", student_id=student["id"])
+    await _activity(student, "Student profile created")
+    return {"id": student["id"], "student_id": sid}
+
+
+@api.get("/students/import/template")
+async def import_template(user: dict = Depends(get_current_user)):
+    csv_text = import_utils.build_template_csv()
+    return Response(content=csv_text, media_type="text/csv",
+                    headers={"Content-Disposition": "attachment; filename=continuum_student_template.csv"})
+
+
+@api.post("/students/import/preview")
+async def import_preview(file: UploadFile = File(...), user: dict = Depends(get_current_user)):
+    content = await file.read()
+    rows, errors = import_utils.parse_upload(file.filename, content)
+    ex = await db.students.find({}, {"_id": 0, "student_id": 1}).to_list(2000)
+    existing = {e["student_id"] for e in ex}
+    summary = import_utils.summarize(rows, existing)
+    preview = [{"student_id": r["student_id"], "student_name": r["student_name"],
+                "course_code": r.get("course_code"), "semester": r.get("semester"),
+                "assignment_name": r.get("assignment_name"), "grade": r.get("grade"),
+                "submission_timestamp": r.get("submission_timestamp"),
+                "status": "Existing" if r["student_id"] in existing else "New"} for r in rows[:50]]
+    return {"summary": summary, "errors": errors[:20], "preview": preview}
+
+
+@api.post("/students/import/commit")
+async def import_commit(file: UploadFile = File(...), user: dict = Depends(get_current_user)):
+    content = await file.read()
+    rows, errors = import_utils.parse_upload(file.filename, content)
+    if not rows:
+        raise HTTPException(status_code=400, detail=(errors[0] if errors else "No valid rows found"))
+    result = await _ingest_rows(rows, user)
+    result["errors"] = errors[:20]
+    return result
+
+
+@api.post("/students/import/demo")
+async def import_demo(user: dict = Depends(get_current_user)):
+    rows, _ = import_utils.parse_upload("demo.csv", import_utils.build_template_csv().encode())
+    result = await _ingest_rows(rows, user)
+    return result
+
+
+@api.post("/students/{student_id}/records")
+async def add_record(student_id: str, request: Request, user: dict = Depends(get_current_user)):
+    b = await request.json()
+    s = await db.students.find_one({"id": student_id}, CLEAN)
+    if not s:
+        raise HTTPException(status_code=404, detail="Student not found")
+    rec = {"semester": b.get("semester"), "course_code": b.get("course_code"),
+           "course_name": b.get("course_name"), "assignment_name": b.get("assignment_name"),
+           "submission_timestamp": b.get("submission_date"), "deadline_timestamp": b.get("deadline"),
+           "grade": float(b["grade"]) if b.get("grade") not in (None, "") else None,
+           "writing_sample": b.get("writing_sample")}
+    s["academic_records"] = s.get("academic_records", []) + [rec]
+    s.setdefault("record_driven", True)
+    made = await _recompute_and_store(s)
+    await _audit(user, "Academic record added", student_id,
+                 f"Added {rec.get('assignment_name') or 'record'} ({rec.get('semester')}) to {s['name']}; analytics updated.",
+                 student_id=student_id)
+    await _activity(s, f"Academic record added ({rec.get('semester')}) — analytics updated")
+    return {"ok": True, "signals_generated": len(made)}
+
+
+@api.post("/students/{student_id}/records/import")
+async def import_records(student_id: str, file: UploadFile = File(...), user: dict = Depends(get_current_user)):
+    content = await file.read()
+    rows, errors = import_utils.parse_upload(file.filename, content)
+    s = await db.students.find_one({"id": student_id}, CLEAN)
+    if not s:
+        raise HTTPException(status_code=404, detail="Student not found")
+    recs = [_clean_record(r) for r in rows]
+    s["academic_records"] = s.get("academic_records", []) + recs
+    s.setdefault("record_driven", True)
+    made = await _recompute_and_store(s)
+    await _audit(user, "Student data updated", student_id,
+                 f"Uploaded {len(recs)} additional record(s) to {s['name']}; baseline recalculated.",
+                 student_id=student_id)
+    await _activity(s, f"{len(recs)} record(s) uploaded — baseline recalculated")
+    return {"added": len(recs), "signals_generated": len(made), "errors": errors[:20]}
+
+
 # ---------------------------------------------------------------- audit util
-async def _audit(user: dict, action: str, entity: str, description: str):
+async def _audit(user: dict, action: str, entity: str, description: str, student_id: str = None):
     await db.audit_events.insert_one({
         "id": f"AUD-{uuid.uuid4().hex[:6]}",
         "timestamp": datetime.now(timezone.utc).strftime("%d %b %Y, %H:%M"),
+        "iso": datetime.now(timezone.utc).isoformat(),
         "user": user.get("name", "Unknown"), "action": action,
-        "entity": entity, "description": description,
+        "entity": entity, "description": description, "student_id": student_id,
     })
 
 
