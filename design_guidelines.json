@@ -1,0 +1,135 @@
+{
+  "app_identity": {
+    "name": "CONTINUUM",
+    "tagline": "Academic integrity has a memory problem.",
+    "core_archetype": "The Performance Pro & High-Density Technical Precision",
+    "positioning": "Series-A Enterprise Academic-Integrity Longitudinal SaaS",
+    "human_in_the_loop_principle": "Non-accusatory behavioral deviation analytics. Surfaces longitudinal style drift & performance volatility for educator review.",
+    "brand_motif": "Continuous connected line, semester timeline nodes, glowing trace beams, high-density data matrix"
+  },
+  "theme": {
+    "default_mode": "dark",
+    "theme_support": "Dark-first with clean Light Mode toggle"
+  },
+  "colors": {
+    "brand_accent": {
+      "hex": "#0EA5E9",
+      "hsl": "199 89% 48%",
+      "hover": "#0284C7",
+      "light_glow": "rgba(14, 165, 233, 0.15)",
+      "gradient": "from-cyan-500 via-sky-400 to-indigo-500"
+    },
+    "dark": {
+      "background": "#07090E",
+      "surface_base": "#0B0F17",
+      "surface_card": "#101622",
+      "surface_hover": "#172030",
+      "surface_border": "rgba(255, 255, 255, 0.08)",
+      "text_primary": "#F8FAFC",
+      "text_secondary": "#94A3B8",
+      "text_muted": "#64748B",
+      "accent_cyan": "#38BDF8",
+      "accent_indigo": "#6366F1"
+    },
+    "light": {
+      "background": "#F8FAFC",
+      "surface_base": "#FFFFFF",
+      "surface_card": "#F1F5F9",
+      "surface_hover": "#E2E8F0",
+      "surface_border": "#E2E8F0",
+      "text_primary": "#0F172A",
+      "text_secondary": "#475569",
+      "text_muted": "#94A3B8",
+      "accent_cyan": "#0284C7",
+      "accent_indigo": "#4F46E5"
+    },
+    "severity_semantics": {
+      "low_baseline": {
+        "color": "#10B981",
+        "bg_dark": "rgba(16, 185, 129, 0.1)",
+        "label": "Baseline Consistent",
+        "icon": "CheckCircle2",
+        "badge_class": "bg-emerald-500/10 text-emerald-400 border-emerald-500/20"
+      },
+      "moderate_drift": {
+        "color": "#F59E0B",
+        "bg_dark": "rgba(245, 158, 11, 0.1)",
+        "label": "Moderate Drift",
+        "icon": "TrendingUp",
+        "badge_class": "bg-amber-500/10 text-amber-400 border-amber-500/20"
+      },
+      "high_anomaly": {
+        "color": "#F43F5E",
+        "bg_dark": "rgba(244, 63, 94, 0.1)",
+        "label": "High Deviation",
+        "icon": "AlertTriangle",
+        "badge_class": "bg-rose-500/10 text-rose-400 border-rose-500/20"
+      },
+      "critical_volatility": {
+        "color": "#A855F7",
+        "bg_dark": "rgba(168, 85, 247, 0.1)",
+        "label": "Structural Anomaly",
+        "icon": "Zap",
+        "badge_class": "bg-purple-500/10 text-purple-400 border-purple-500/20"
+      }
+    },
+    "charts": {
+      "line_primary": "#0EA5E9",
+      "line_baseline": "#64748B",
+      "range_band": "rgba(14, 165, 233, 0.12)",
+      "series": ["#0EA5E9", "#6366F1", "#10B981", "#F59E0B", "#F43F5E"]
+    }
+  },
+  "typography": {
+    "font_family_heading": "Plus Jakarta Sans, sans-serif",
+    "font_family_body": "Plus Jakarta Sans, sans-serif",
+    "font_family_mono": "JetBrains Mono, monospace",
+    "hierarchy": {
+      "h1": "text-4xl lg:text-5xl font-bold tracking-tight",
+      "h2": "text-2xl lg:text-3xl font-semibold tracking-tight",
+      "h3": "text-xl font-semibold tracking-normal",
+      "h4": "text-base font-medium tracking-normal",
+      "body": "text-sm text-slate-300 leading-relaxed",
+      "caption": "text-xs font-mono text-slate-400 uppercase tracking-wider"
+    }
+  },
+  "spacing_and_layout": {
+    "sidebar": {
+      "expanded_width": "w-64",
+      "collapsed_width": "w-16",
+      "background": "bg-[#07090E]/90 backdrop-blur-xl border-r border-white/10"
+    },
+    "header": {
+      "height": "h-16",
+      "background": "bg-[#0B0F17]/80 backdrop-blur-md border-b border-white/10"
+    },
+    "grid_modes": {
+      "dashboard_kpi": "grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4",
+      "main_split": "grid grid-cols-1 lg:grid-cols-12 gap-6",
+      "bento_hero": "grid grid-cols-1 md:grid-cols-3 gap-6"
+    },
+    "card_style": "bg-[#101622] border border-white/10 rounded-xl p-5 shadow-lg backdrop-blur-sm hover:border-sky-500/30 transition-all duration-200"
+  },
+  "key_components_guidelines": {
+    "behavioral_deviation_index": "0-100 Gauge with color gradient, breakdown factors (Stylometric Drift %, Submission Velocity Spike, Performance Volatility), and clear risk band text.",
+    "semester_timeline": "5-Semester horizontal slider or connected node line (Fall 2024 -> Spring 2026) showing historical submissions vs anomaly points.",
+    "old_world_vs_continuum": "Interactive comparison widget: Single-submission snapshot detection vs CONTINUUM multi-semester pattern contextual intelligence.",
+    "responsible_ai_trust_callout": "Banner emphasizing Educator-in-the-Loop, non-accusatory workflow, evidence ledger, and transparent feature weights.",
+    "review_workspace": "Side-by-side submission analysis, writing-style drift diff viewer, prompt history, and educator decision action bar (Approve, Request Interview, Clear Alert)."
+  },
+  "image_urls": {
+    "avatars": [
+      {
+        "url": "https://images.unsplash.com/photo-1600180758890-6b94519a8ba6?crop=entropy&cs=srgb&fm=jpg&q=85",
+        "description": "Student Headshot 1"
+      }
+    ]
+  },
+  "instructions_to_main_agent": [
+    "Always wrap interactive elements in data-testid attributes (e.g., data-testid='login-submit-button', data-testid='sidebar-students-link', data-testid='student-profile-tab').",
+    "Ensure dark mode is default with dark background #07090E and clean high-contrast text #F8FAFC.",
+    "Implement Google Auth simulation on the login page with 'Enter Demo Account' instant bypass for quick testing.",
+    "Include real interactive charts using Recharts for longitudinal trends, performance bands, and signal distributions.",
+    "Keep the Series-A enterprise vibe: precise lines, monospace metrics, subtle cyan glows, structured tables with sort/filter/search."
+  ]
+}
