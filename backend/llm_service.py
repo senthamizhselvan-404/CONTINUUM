@@ -6,7 +6,6 @@ the language non-accusatory and human-in-the-loop.
 import os
 import logging
 
-<<<<<<< HEAD
 try:
     from emergentintegrations.llm.chat import LlmChat, UserMessage, TextDelta, StreamDone
 except ImportError:
@@ -18,9 +17,6 @@ except ImportError:
         pass
     class StreamDone:
         pass
-=======
-from emergentintegrations.llm.chat import LlmChat, UserMessage, TextDelta, StreamDone
->>>>>>> 21a94e37f07a08c0383f267b7f4dcacd6fa198e7
 
 logger = logging.getLogger(__name__)
 
@@ -39,20 +35,16 @@ SYSTEM = (
 
 
 async def generate_llm_explanation(signal: dict) -> str:
-<<<<<<< HEAD
     if LlmChat is None:
         # Fallback when emergentintegrations is not available
         logger.warning("emergentintegrations module not available. Returning placeholder explanation.")
         return f"This behavioral signal for {signal.get('student_name', 'student')} requires manual review."
-    
+
     key = os.environ.get("EMERGENT_LLM_KEY")
     if not key:
         logger.warning("EMERGENT_LLM_KEY not set. Returning placeholder explanation.")
         return f"This behavioral signal for {signal.get('student_name', 'student')} requires manual review."
-    
-=======
-    key = os.environ["EMERGENT_LLM_KEY"]
->>>>>>> 21a94e37f07a08c0383f267b7f4dcacd6fa198e7
+
     f = signal["factors"]
     prompt = (
         f"Student: {signal['student_name']}. Course: {signal['course_code']} — {signal['course_name']}. "

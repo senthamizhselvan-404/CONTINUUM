@@ -35,7 +35,7 @@ function Dropzone({ onFile, testid }) {
   );
 }
 
-export function AddStudentModal({ open, onOpenChange, onCreated }) {
+export function AddStudentModal({ open, onOpenChange, onCreated, showViewProfile = true }) {
   const nav = useNavigate();
   const [f, setF] = useState({ student_id: "", full_name: "", email: "", department: "Computer Science", program: "B.Sc Computer Science", year: "1", enrollment_date: "", current_semester: "1", current_gpa: "", advisor: "" });
   const [busy, setBusy] = useState(false);
@@ -67,7 +67,9 @@ export function AddStudentModal({ open, onOpenChange, onCreated }) {
             <p className="text-sm font-semibold text-foreground">Student added successfully.</p>
             <div className="flex gap-2">
               <Button variant="outline" onClick={close}>Add another</Button>
-              <Button className="gap-2" data-testid="open-created-profile" onClick={() => { close(); nav(`/students/${created}`); }}>Open Student Profile <ArrowRight className="h-4 w-4" /></Button>
+              {showViewProfile && (
+                <Button className="gap-2" data-testid="open-created-profile" onClick={() => { close(); nav(`/students/${created}`); }}>Open Student Profile <ArrowRight className="h-4 w-4" /></Button>
+              )}
             </div>
           </div>
         ) : (

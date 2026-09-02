@@ -1,9 +1,10 @@
 import React from "react";
-import { BrowserRouter, Routes, Route, Navigate, useLocation } from "react-router-dom";
+import { BrowserRouter, Routes, Route, Navigate } from "react-router-dom";
 import { useAuth } from "@/context/AuthContext";
 import AppShell from "@/components/AppShell";
 import Login from "@/pages/Login";
-import AuthCallback from "@/pages/AuthCallback";
+import EducatorLogin from "@/pages/EducatorLogin";
+import EducatorDashboard from "@/pages/EducatorDashboard";
 import Dashboard from "@/pages/Dashboard";
 import Students from "@/pages/Students";
 import StudentProfile from "@/pages/StudentProfile";
@@ -34,16 +35,24 @@ function Protected({ children }) {
   const { user, loading } = useAuth();
   if (loading) return <FullLoader />;
   if (!user) return <Navigate to="/login" replace />;
+  if (user.role === "educator") return <Navigate to="/educator" replace />;
   return <AppShell>{children}</AppShell>;
 }
 
-function AppRouter() {
-  const location = useLocation();
-  if (location.hash?.includes("session_id=")) return <AuthCallback />;
+function ProtectedEducator({ children }) {
+  const { user, loading } = useAuth();
+  if (loading) return <FullLoader />;
+  if (!user) return <Navigate to="/educator/login" replace />;
+  if (user.role !== "educator") return <Navigate to="/dashboard" replace />;
+  return children;
+}
 
+function AppRouter() {
   return (
     <Routes>
       <Route path="/login" element={<Login />} />
+      <Route path="/educator/login" element={<EducatorLogin />} />
+      <Route path="/educator" element={<ProtectedEducator><EducatorDashboard /></ProtectedEducator>} />
       <Route path="/dashboard" element={<Protected><Dashboard /></Protected>} />
       <Route path="/students" element={<Protected><Students /></Protected>} />
       <Route path="/students/:id" element={<Protected><StudentProfile /></Protected>} />

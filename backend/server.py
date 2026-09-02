@@ -2,10 +2,10 @@ from fastapi import FastAPI, APIRouter, Request, Response, HTTPException, Depend
 from dotenv import load_dotenv
 from starlette.middleware.cors import CORSMiddleware
 from motor.motor_asyncio import AsyncIOMotorClient
+from passlib.context import CryptContext
 import os
 import uuid
 import logging
-import httpx
 from pathlib import Path
 from datetime import datetime, timezone, timedelta
 from typing import Optional
@@ -30,8 +30,8 @@ api = APIRouter(prefix="/api")
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("continuum")
 
-EMERGENT_SESSION_URL = "https://demobackend.emergentagent.com/auth/v1/env/oauth/session-data"
 COOKIE = "session_token"
+pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
 
 
 # ---------------------------------------------------------------- data seed
@@ -81,13 +81,18 @@ async def _create_session(user_id: str) -> str:
     return token
 
 
-def _set_cookie(response: Response, token: str):
-    response.set_cookie(key=COOKIE, value=token, httponly=True, secure=True,
-                        samesite="none", path="/", max_age=7 * 24 * 3600)
+def _set_cookie(response: Response, token: str, request: Request):
+    # Secure+SameSite=None cookies are silently dropped by browsers on plain
+    # http (e.g. local dev on http://localhost) — fall back to a Lax cookie
+    # there so the session actually persists. Real https deployments keep
+    # the stricter cross-site-safe settings.
+    secure = request.url.scheme == "https"
+    response.set_cookie(key=COOKIE, value=token, httponly=True, secure=secure,
+                        samesite="none" if secure else "lax", path="/", max_age=7 * 24 * 3600)
 
 
 async def _upsert_user(email: str, name: str, picture: str, role: str = "reviewer") -> dict:
-    existing = await db.users.find_one({"email": email}, {"_id": 0})
+    existing = await db.users.find_one({"email": email}, {"_id": 0, "created_at": 0, "password_hash": 0})
     if existing:
         await db.users.update_one({"email": email}, {"$set": {"name": name, "picture": picture}})
         return {**existing, "name": name, "picture": picture}
@@ -96,7 +101,7 @@ async def _upsert_user(email: str, name: str, picture: str, role: str = "reviewe
            "role": role, "institution": "Northbridge University",
            "created_at": datetime.now(timezone.utc)}
     await db.users.insert_one(doc)
-    return {k: v for k, v in doc.items() if k != "created_at"}
+    return {k: v for k, v in doc.items() if k not in ("_id", "created_at")}
 
 
 async def get_current_user(request: Request) -> dict:
@@ -117,38 +122,57 @@ async def get_current_user(request: Request) -> dict:
         exp = exp.replace(tzinfo=timezone.utc)
     if exp < datetime.now(timezone.utc):
         raise HTTPException(status_code=401, detail="Session expired")
-    user = await db.users.find_one({"user_id": session["user_id"]}, {"_id": 0, "created_at": 0})
+    user = await db.users.find_one({"user_id": session["user_id"]},
+                                   {"_id": 0, "created_at": 0, "password_hash": 0})
     if not user:
         raise HTTPException(status_code=401, detail="User not found")
     return user
 
 
-@api.post("/auth/session")
-async def auth_session(request: Request, response: Response):
-    body = await request.json()
-    session_id = body.get("session_id")
-    if not session_id:
-        raise HTTPException(status_code=400, detail="Missing session_id")
-    async with httpx.AsyncClient(timeout=15) as hc:
-        r = await hc.get(EMERGENT_SESSION_URL, headers={"X-Session-ID": session_id})
-    if r.status_code != 200:
-        raise HTTPException(status_code=401, detail="Invalid session_id")
-    data = r.json()
-    role = "owner" if data["email"] == "senthamizhsarathy@gmail.com" else "reviewer"
-    user = await _upsert_user(data["email"], data.get("name") or data["email"],
-                              data.get("picture", ""), role)
-    token = await _create_session(user["user_id"])
-    _set_cookie(response, token)
-    return {"user": user}
-
-
 @api.post("/auth/demo")
-async def auth_demo(response: Response):
+async def auth_demo(request: Request, response: Response):
     user = await _upsert_user("demo@continuum.edu", "Alex Morgan",
                               seed_data._avatar("Alex Morgan"), "reviewer")
     token = await _create_session(user["user_id"])
-    _set_cookie(response, token)
+    _set_cookie(response, token, request)
     return {"user": user}
+
+
+@api.post("/auth/educator/register")
+async def educator_register(request: Request, response: Response):
+    body = await request.json()
+    name = (body.get("name") or "").strip()
+    email = (body.get("email") or "").strip().lower()
+    password = body.get("password") or ""
+    if not name or not email:
+        raise HTTPException(status_code=400, detail="Name and email are required")
+    if len(password) < 6:
+        raise HTTPException(status_code=400, detail="Password must be at least 6 characters")
+    if await db.users.find_one({"email": email}):
+        raise HTTPException(status_code=409, detail="An account with this email already exists")
+    user_id = f"user_{uuid.uuid4().hex[:12]}"
+    doc = {"user_id": user_id, "email": email, "name": name, "picture": seed_data._avatar(name),
+           "role": "educator", "password_hash": pwd_context.hash(password),
+           "institution": "Northbridge University", "created_at": datetime.now(timezone.utc)}
+    await db.users.insert_one(doc)
+    token = await _create_session(user_id)
+    _set_cookie(response, token, request)
+    user = {k: v for k, v in doc.items() if k not in ("_id", "created_at", "password_hash")}
+    return {"user": user}
+
+
+@api.post("/auth/educator/login")
+async def educator_login(request: Request, response: Response):
+    body = await request.json()
+    email = (body.get("email") or "").strip().lower()
+    password = body.get("password") or ""
+    user = await db.users.find_one({"email": email, "role": "educator"})
+    if not user or not user.get("password_hash") or not pwd_context.verify(password, user["password_hash"]):
+        raise HTTPException(status_code=401, detail="Invalid email or password")
+    token = await _create_session(user["user_id"])
+    _set_cookie(response, token, request)
+    clean = {k: v for k, v in user.items() if k not in ("_id", "created_at", "password_hash")}
+    return {"user": clean}
 
 
 @api.get("/auth/me")
@@ -476,7 +500,7 @@ async def audit_log(user: dict = Depends(get_current_user), q: str = ""):
 @api.get("/settings")
 async def get_settings(user: dict = Depends(get_current_user)):
     s = await db.settings.find_one({"_key": "global"}, {"_id": 0, "_key": 0})
-    users = await db.users.find({}, {"_id": 0, "created_at": 0}).to_list(50)
+    users = await db.users.find({}, {"_id": 0, "created_at": 0, "password_hash": 0}).to_list(50)
     return {**s, "users": users, "sources": await db.data_sources.find({}, CLEAN).to_list(20)}
 
 

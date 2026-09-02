@@ -32,10 +32,7 @@
     "@radix-ui/react-toggle-group": "1.1.7",
     "@radix-ui/react-tooltip": "1.2.4",
     "@tanstack/react-query": "5.56.2",
-<<<<<<< HEAD
     "ajv": "^8.20.0",
-=======
->>>>>>> 21a94e37f07a08c0383f267b7f4dcacd6fa198e7
     "axios": "1.18.0",
     "class-variance-authority": "0.7.1",
     "clsx": "2.1.1",

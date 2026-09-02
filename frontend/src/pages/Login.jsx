@@ -1,23 +1,17 @@
 import React, { useEffect, useState } from "react";
-import { useNavigate } from "react-router-dom";
-import { ArrowRight, Sparkles } from "lucide-react";
+import { Link, useNavigate } from "react-router-dom";
+import { GraduationCap, Sparkles } from "lucide-react";
 import { toast } from "sonner";
 import { LogoMark } from "@/components/Logo";
 import { useAuth } from "@/context/AuthContext";
 import { Button } from "@/components/ui/button";
 
-// REMINDER: DO NOT HARDCODE THE URL, OR ADD ANY FALLBACKS OR REDIRECT URLS, THIS BREAKS THE AUTH
 export default function Login() {
   const nav = useNavigate();
   const { user, enterDemo } = useAuth();
   const [busy, setBusy] = useState(false);
 
-  useEffect(() => { if (user) nav("/dashboard", { replace: true }); }, [user, nav]);
-
-  const googleLogin = () => {
-    const redirectUrl = window.location.origin + "/dashboard";
-    window.location.href = `https://auth.emergentagent.com/?redirect=${encodeURIComponent(redirectUrl)}`;
-  };
+  useEffect(() => { if (user) nav(user.role === "educator" ? "/educator" : "/dashboard", { replace: true }); }, [user, nav]);
 
   const demo = async () => {
     setBusy(true);
@@ -43,20 +37,13 @@ export default function Login() {
           </p>
 
           <div className="mt-9 space-y-3">
-            <div className="space-y-1.5">
-              <label className="text-xs font-medium text-muted-foreground">Email</label>
-              <input data-testid="login-email" placeholder="you@university.edu" disabled
-                className="w-full h-11 rounded-lg border border-border bg-muted/40 px-3.5 text-sm outline-none opacity-70" />
-            </div>
-            <div className="space-y-1.5">
-              <label className="text-xs font-medium text-muted-foreground">Password</label>
-              <input data-testid="login-password" type="password" placeholder="••••••••" disabled
-                className="w-full h-11 rounded-lg border border-border bg-muted/40 px-3.5 text-sm outline-none opacity-70" />
-            </div>
-            <Button data-testid="login-google-button" onClick={googleLogin}
+            <Button data-testid="enter-demo-button" onClick={demo} disabled={busy}
               className="w-full h-11 gap-2 text-sm font-semibold">
-              Sign in with Google <ArrowRight className="h-4 w-4" />
+              <Sparkles className="h-4 w-4" /> {busy ? "Loading demo…" : "Enter Demo"}
             </Button>
+            <p className="text-xs text-muted-foreground text-center pt-1">
+              Investor demo · fictional synthetic data only
+            </p>
 
             <div className="flex items-center gap-3 py-1">
               <div className="h-px flex-1 bg-border" />
@@ -64,12 +51,13 @@ export default function Login() {
               <div className="h-px flex-1 bg-border" />
             </div>
 
-            <Button data-testid="enter-demo-button" onClick={demo} disabled={busy} variant="outline"
-              className="w-full h-11 gap-2 text-sm font-semibold border-primary/30 hover:bg-primary/10 text-primary">
-              <Sparkles className="h-4 w-4" /> {busy ? "Loading demo…" : "Enter Demo"}
-            </Button>
+            <Link to="/educator/login" data-testid="educator-login-link">
+              <Button variant="outline" className="w-full h-11 gap-2 text-sm font-semibold">
+                <GraduationCap className="h-4 w-4" /> Sign in as Educator
+              </Button>
+            </Link>
             <p className="text-xs text-muted-foreground text-center pt-1">
-              Investor demo · fictional synthetic data only
+              Educators upload and manage student records in a dedicated workspace
             </p>
           </div>
         </div>
