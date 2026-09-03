@@ -145,7 +145,8 @@ def _build_analytics(index, primary, perf_override=None, breakdown=None):
         "writing": round(writing), "submission": round(submission),
         "performance": round(performance), "longitudinal": round(longitudinal),
     }
-    return baseline, writing_features, perf_analysis, submission_behavior, factors
+    breakdown, breakdown_total = ae.change_breakdown(factors)
+    return baseline, writing_features, perf_analysis, submission_behavior, factors, breakdown, breakdown_total
 
 
 def _semesters_for(student, perf_series, index, primary):
@@ -173,6 +174,9 @@ def _semesters_for(student, perf_series, index, primary):
 
 # ---- Featured students (curated demo narratives) -------------------------
 FEATURED = [
+    {"name": "Alex Morgan", "program": "Computer Science", "year": 3, "index": 24,
+     "primary": "submission", "perf": [81, 83, 82, 85, 80], "breakdown": (14, 31, 12),
+     "case": "Demo student — personal workspace", "sid": "STU-2024-1000"},
     {"name": "Arjun Kumar", "program": "Computer Science", "year": 2, "index": 68,
      "primary": "writing", "perf": [78, 81, 79, 82, 61], "breakdown": (42, 67, 31),
      "case": "Writing-style drift"},
@@ -204,17 +208,18 @@ def build_all():
     students, signals, reviews, audit, used_names = [], [], [], [], set()
     now = datetime(2026, 8, 20, tzinfo=timezone.utc)
 
-    def make_student(name, program, year, index, primary, perf=None, breakdown=None, featured=False, case=None):
-        sid = f"STU-{2024}-{len(students)+1001}"
+    def make_student(name, program, year, index, primary, perf=None, breakdown=None, featured=False, case=None, sid=None):
+        sid = sid or f"STU-{2024}-{len(students)+1001}"
         student_id = uuid.uuid4().hex[:10]
         s = {"id": student_id, "student_id": sid, "name": name, "program": program,
              "dept_id": PROGRAMS[program], "year": year, "avatar": _avatar(name),
              "featured": featured, "case": case}
-        baseline, wfeat, perf_analysis, sub_beh, factors = _build_analytics(
+        baseline, wfeat, perf_analysis, sub_beh, factors, chg_breakdown, chg_total = _build_analytics(
             index, primary, perf_override=perf, breakdown=breakdown)
         idx = ae.deviation_index(factors["writing"], factors["submission"],
                                  factors["performance"], factors["longitudinal"])
         idx = index if featured else idx
+        observation_count = RNG.randint(9, 22)  # synthetic students all have multi-semester history
         s.update({
             "deviation_index": idx,
             "band": ae.deviation_band(idx),
@@ -227,6 +232,10 @@ def build_all():
             "semesters": _semesters_for(s, perf_analysis["series"], idx, primary),
             "last_activity": (now - timedelta(days=RNG.randint(0, 20))).strftime("%d %b %Y"),
             "trend": _trend(perf_analysis["series"]),
+            "baseline_status": ae.baseline_maturity(observation_count),
+            "change_breakdown": chg_breakdown,
+            "previous_index": max(0, idx - chg_total),
+            "index_delta": chg_total,
         })
         s["signal_count"] = 0
         students.append(s)
@@ -234,7 +243,8 @@ def build_all():
 
     for f in FEATURED:
         make_student(f["name"], f["program"], f["year"], f["index"], f["primary"],
-                     perf=f["perf"], breakdown=f["breakdown"], featured=True, case=f["case"])
+                     perf=f["perf"], breakdown=f["breakdown"], featured=True, case=f["case"],
+                     sid=f.get("sid"))
         used_names.add(f["name"])
 
     # Generic population
@@ -268,8 +278,13 @@ def build_all():
 
     detected_pool = [now - timedelta(days=d) for d in range(7, 34)]
 
-    def add_signal(student, stype, severity, status, sem, course, det, explanation=None, evidence=None):
+    def add_signal(student, stype, severity, status, sem, course, det, explanation=None, evidence=None,
+                   context=None):
         sig_id = f"SIG-{len(signals)+4001}"
+        persistence = RNG.randint(2, 5)
+        agreement = ae.multi_signal_agreement(student["factors"])
+        confidence = ae.calculate_confidence(student["factors"], evidence_count=persistence + 1, persistence=persistence)
+        priority = ae.review_priority(severity, confidence, agreement, persistence)
         signals.append({
             "id": sig_id, "student_id": student["id"], "student_name": student["name"],
             "student_avatar": student["avatar"], "program": student["program"],
@@ -278,6 +293,8 @@ def build_all():
             "status": status, "detected": det.strftime("%d %b %Y"), "detected_iso": det.isoformat(),
             "factors": student["factors"], "deviation_index": student["deviation_index"],
             "band": student["band"],
+            "confidence": confidence, "persistence": persistence,
+            "multi_signal_agreement": agreement, "review_priority": priority,
             "explanation": explanation, "explanation_source": "prototype" if explanation else None,
             "evidence": evidence or [
                 {"label": "Historical baseline", "value": "Previous 4 semesters"},
@@ -286,6 +303,7 @@ def build_all():
                 {"label": "Submission-pattern deviation", "value": f"{student['factors']['submission']}%"},
                 {"label": "Performance deviation", "value": f"{student['factors']['performance']}%"},
             ],
+            "context": context, "context_requested": False,
         })
         student["signal_count"] += 1
         return signals[-1]
@@ -298,6 +316,13 @@ def build_all():
     arjun_sig = add_signal(arjun, "Writing Drift", "High", "Needs Follow-up",
                            SEMESTERS[3], course_by_code("CS204"), datetime(2026, 8, 18, tzinfo=timezone.utc),
                            explanation=ae.generate_explanation({"factors": arjun["factors"]}))
+
+    # A small personal signal for the demo student (Alex Morgan) so the
+    # Student Demo view has something to show in "My Risk Signals".
+    alex = next(s for s in students if s["name"] == "Alex Morgan")
+    add_signal(alex, "Submission Pattern Shift", "Low", "Resolved",
+               SEMESTERS[4], course_by_code("CS210"), datetime(2026, 8, 12, tzinfo=timezone.utc),
+               explanation=ae.generate_explanation({"factors": alex["factors"]}))
 
     curated = {
         "Meera Nair": ("Multi-Signal Deviation", "High", "Needs Follow-up", "SCI220", 17),
@@ -326,16 +351,18 @@ def build_all():
                            RNG.choice(detected_pool))
 
     # ---- Reviews -----------------------------------------------------------
-    reviewers = ["Alex Morgan", "Dr. Nandini Rao", "Prof. James Okafor", "Dr. Lena Fischer"]
+    reviewers = ["Dr. Nandini Rao", "Prof. James Okafor", "Dr. Lena Fischer"]
     for sig in signals:
+        if sig["student_name"] == "Alex Morgan":
+            continue  # the demo student's own signal isn't part of the educator queue
         if sig["status"] in ("Under Review", "Needs Follow-up", "New"):
             rid = f"REV-{len(reviews)+7001}"
             r_status = {"New": "Open", "Under Review": "In Progress",
-                        "Needs Follow-up": "Needs Follow-up"}[sig["status"]]
+                        "Needs Follow-up": "Follow-up"}[sig["status"]]
             notes = []
             if sig["student_name"] == "Arjun Kumar":
                 notes = [{
-                    "id": uuid.uuid4().hex[:8], "reviewer": "Alex Morgan",
+                    "id": uuid.uuid4().hex[:8], "reviewer": "Dr. Nandini Rao",
                     "timestamp": "19 Aug 2026, 09:14",
                     "text": "Student explained that the assignment format changed this semester. Requesting prior drafts for context before any determination.",
                 }]
@@ -344,7 +371,7 @@ def build_all():
                 "student_name": sig["student_name"], "student_avatar": sig["student_avatar"],
                 "signal_type": sig["signal_type"], "severity": sig["severity"],
                 "course_code": sig["course_code"], "semester": sig["semester"],
-                "assigned_reviewer": RNG.choice(reviewers) if sig["student_name"] != "Arjun Kumar" else "Alex Morgan",
+                "assigned_reviewer": RNG.choice(reviewers) if sig["student_name"] != "Arjun Kumar" else "Dr. Nandini Rao",
                 "created": sig["detected"], "status": r_status, "notes": notes,
             })
 
@@ -355,11 +382,11 @@ def build_all():
 
     audit_event("18 Aug 2026, 08:02", "System", "Signal generated", "SIG-4001",
                 "Writing-style drift signal generated for Arjun Kumar (CS204).")
-    audit_event("18 Aug 2026, 10:41", "Alex Morgan", "Signal opened", "SIG-4001",
+    audit_event("18 Aug 2026, 10:41", "Dr. Nandini Rao", "Signal opened", "SIG-4001",
                 "Reviewer opened signal for Arjun Kumar.")
-    audit_event("19 Aug 2026, 09:14", "Alex Morgan", "Note added", "REV-7001",
+    audit_event("19 Aug 2026, 09:14", "Dr. Nandini Rao", "Note added", "REV-7001",
                 "Reviewer added a note regarding assignment format change.")
-    audit_event("19 Aug 2026, 09:20", "Alex Morgan", "Status changed", "SIG-4001",
+    audit_event("19 Aug 2026, 09:20", "Dr. Nandini Rao", "Status changed", "SIG-4001",
                 "Signal marked Needs Follow-up.")
     for sig in signals[1:]:
         d = sig["detected"]
@@ -375,7 +402,8 @@ def build_all():
         c_students = RNG.randint(38, 96)
         courses.append({**c, "students": c_students, "signals": len(c_signals),
                         "trend": RNG.choice(["up", "flat", "down"]),
-                        "avg_stability": RNG.randint(72, 94)})
+                        "avg_stability": RNG.randint(72, 94),
+                        "median_submission_hours": RNG.randint(5, 14)})
 
     # ---- Data sources ------------------------------------------------------
     data_sources = [

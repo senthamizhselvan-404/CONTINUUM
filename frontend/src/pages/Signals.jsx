@@ -2,7 +2,7 @@ import React, { useState, useEffect } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { useNavigate, useSearchParams } from "react-router-dom";
 import api from "@/lib/api";
-import { PageHeader, Loading, SeverityBadge, StatusBadge, StudentAvatar, EmptyState } from "@/components/common";
+import { PageHeader, Loading, SeverityBadge, StatusBadge, StudentAvatar, EmptyState, ConfidenceBadge } from "@/components/common";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 
 const SIGNAL_TYPES = ["Writing Drift", "Performance Volatility", "Submission Pattern Shift", "Cross-Semester Drift", "Multi-Signal Deviation"];
@@ -51,7 +51,8 @@ export default function Signals() {
               <thead><tr className="text-left text-xs text-muted-foreground border-b border-border bg-muted/30">
                 <th className="font-medium py-2.5 px-4">Student</th><th className="font-medium py-2.5 px-4">Signal</th>
                 <th className="font-medium py-2.5 px-4">Course</th><th className="font-medium py-2.5 px-4">Semester</th>
-                <th className="font-medium py-2.5 px-4">Severity</th><th className="font-medium py-2.5 px-4">Detected</th>
+                <th className="font-medium py-2.5 px-4">Severity</th><th className="font-medium py-2.5 px-4">Confidence</th>
+                <th className="font-medium py-2.5 px-4">Detected</th>
                 <th className="font-medium py-2.5 px-4">Status</th></tr></thead>
               <tbody>
                 {data.signals.map((s) => (
@@ -62,6 +63,7 @@ export default function Signals() {
                     <td className="py-2.5 px-4 font-mono text-xs text-muted-foreground">{s.course_code}</td>
                     <td className="py-2.5 px-4 text-muted-foreground">{s.semester}</td>
                     <td className="py-2.5 px-4"><SeverityBadge severity={s.severity} /></td>
+                    <td className="py-2.5 px-4"><ConfidenceBadge confidence={s.confidence} /></td>
                     <td className="py-2.5 px-4 text-muted-foreground whitespace-nowrap">{s.detected}</td>
                     <td className="py-2.5 px-4"><StatusBadge status={s.status} /></td>
                   </tr>

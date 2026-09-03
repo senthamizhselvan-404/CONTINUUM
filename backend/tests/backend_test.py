@@ -1,11 +1,13 @@
 """
 CONTINUUM backend regression suite.
-Covers: auth demo/me/logout, data endpoints (overview, students, signals, reviews,
-analytics, courses, data-sources, audit-log, settings, search), LLM explain endpoint,
-signal status patch, review notes + action workflow, settings thresholds patch, demo reset.
+Covers: auth demo/educator/me/logout, role-based access control (student vs
+educator), data endpoints (overview, students, signals, reviews, analytics,
+courses, data-sources, audit-log, settings, search), LLM explain endpoint,
+signal status patch, review notes + action workflow, settings thresholds
+patch, demo reset.
 """
 import os
-import time
+import uuid
 import pytest
 import requests
 
@@ -18,9 +20,22 @@ ACCUSATORY = ["cheater", "guilty", "ai-generated", "cheating", "plagiarist"]
 
 @pytest.fixture(scope="session")
 def session():
+    """Demo session — logs in as the student persona, Alex Morgan."""
     s = requests.Session()
     r = s.post(f"{API}/auth/demo", timeout=30)
     assert r.status_code == 200, f"auth/demo failed: {r.status_code} {r.text}"
+    return s
+
+
+@pytest.fixture(scope="session")
+def edu_session():
+    """Educator session — registers a fresh educator account for admin-scoped tests."""
+    s = requests.Session()
+    email = f"edu_{uuid.uuid4().hex[:10]}@northbridge.test"
+    r = s.post(f"{API}/auth/educator/register", json={
+        "name": "Dr. Test Educator", "email": email, "password": "testpass123",
+    }, timeout=30)
+    assert r.status_code == 200, f"educator register failed: {r.status_code} {r.text}"
     return s
 
 
@@ -33,6 +48,8 @@ class TestAuth:
         u = r.json()["user"]
         assert u["email"] == "demo@continuum.edu"
         assert u["name"] == "Alex Morgan"
+        assert u["role"] == "student"
+        assert u["student_id"]
         assert "session_token" in s.cookies
 
     def test_me_unauthenticated(self):
@@ -55,102 +72,183 @@ class TestAuth:
                           timeout=15)
         assert r2.status_code == 401
 
+    def test_educator_register_and_login(self):
+        email = f"edu_{uuid.uuid4().hex[:10]}@northbridge.test"
+        s = requests.Session()
+        r = s.post(f"{API}/auth/educator/register",
+                   json={"name": "Dr. Jane Doe", "email": email, "password": "secretpw"}, timeout=15)
+        assert r.status_code == 200
+        assert r.json()["user"]["role"] == "educator"
+        # duplicate email
+        r_dup = s.post(f"{API}/auth/educator/register",
+                       json={"name": "Dr. Jane Doe", "email": email, "password": "secretpw"}, timeout=15)
+        assert r_dup.status_code == 409
+        # login with wrong password
+        s2 = requests.Session()
+        bad = s2.post(f"{API}/auth/educator/login", json={"email": email, "password": "wrong"}, timeout=15)
+        assert bad.status_code == 401
+        # login with correct password
+        good = s2.post(f"{API}/auth/educator/login", json={"email": email, "password": "secretpw"}, timeout=15)
+        assert good.status_code == 200
+        assert good.json()["user"]["role"] == "educator"
 
-# ---------- Data endpoints ----------
-class TestDataEndpoints:
-    def test_overview(self, session):
+
+# ---------- Role-based access control ----------
+class TestRBAC:
+    def test_student_scoped_overview(self, session):
         r = session.get(f"{API}/overview", timeout=15)
+        assert r.status_code == 200
+        d = r.json()
+        assert d["personal"] is True
+        assert d["student"]["name"] == "Alex Morgan"
+
+    def test_student_scoped_students_list(self, session):
+        r = session.get(f"{API}/students", timeout=15)
+        assert r.status_code == 200
+        d = r.json()
+        assert d["total"] == 1
+        assert d["students"][0]["name"] == "Alex Morgan"
+
+    def test_student_cannot_view_other_student(self, session, edu_session):
+        others = edu_session.get(f"{API}/students?q=arjun", timeout=15).json()["students"]
+        other_id = others[0]["id"]
+        r = session.get(f"{API}/students/{other_id}", timeout=15)
+        assert r.status_code == 403
+
+    def test_student_scoped_signals(self, session):
+        r = session.get(f"{API}/signals", timeout=15)
+        assert r.status_code == 200
+        sigs = r.json()["signals"]
+        assert all(s["student_name"] == "Alex Morgan" for s in sigs)
+
+    def test_student_cannot_view_other_signal(self, session, edu_session):
+        other_sig = edu_session.get(f"{API}/signals", timeout=15).json()["signals"][0]
+        r = session.get(f"{API}/signals/{other_sig['id']}", timeout=15)
+        assert r.status_code == 403
+
+    def test_student_scoped_analytics(self, session):
+        r = session.get(f"{API}/analytics", timeout=15)
+        assert r.status_code == 200
+        assert r.json()["personal"] is True
+
+    def test_student_blocked_from_admin_endpoints(self, session):
+        for path in ["/courses", "/data-sources", "/audit-log", "/settings",
+                     "/students-stats", "/search?q=a"]:
+            r = session.get(f"{API}{path}", timeout=15)
+            assert r.status_code == 403, f"{path} should be forbidden for student role"
+
+    def test_student_blocked_from_review_and_signal_mutation(self, session, edu_session):
+        rev = edu_session.get(f"{API}/reviews", timeout=15).json()["reviews"][0]
+        r = session.post(f"{API}/reviews/{rev['id']}/notes", json={"text": "nope"}, timeout=15)
+        assert r.status_code == 403
+        r2 = session.post(f"{API}/reviews/{rev['id']}/action", json={"action": "acknowledge"}, timeout=15)
+        assert r2.status_code == 403
+        sig = edu_session.get(f"{API}/signals", timeout=15).json()["signals"][0]
+        r3 = session.patch(f"{API}/signals/{sig['id']}", json={"status": "Under Review"}, timeout=15)
+        assert r3.status_code == 403
+        r4 = session.post(f"{API}/signals/{sig['id']}/explain", timeout=30)
+        assert r4.status_code == 403
+
+    def test_student_blocked_from_add_student(self, session):
+        r = session.post(f"{API}/students", json={"student_id": "X", "full_name": "Nope"}, timeout=15)
+        assert r.status_code == 403
+
+
+# ---------- Data endpoints (educator — institution-wide) ----------
+class TestDataEndpoints:
+    def test_overview(self, edu_session):
+        r = edu_session.get(f"{API}/overview", timeout=15)
         assert r.status_code == 200
         d = r.json()
         assert "stats" in d and "signals_over_time" in d and "distribution" in d
         assert len(d["signals_over_time"]) >= 1
 
-    def test_students_list_and_filters(self, session):
-        r = session.get(f"{API}/students", timeout=15)
+    def test_students_list_and_filters(self, edu_session):
+        r = edu_session.get(f"{API}/students", timeout=15)
         assert r.status_code == 200
         d = r.json()
         assert d["total"] >= 100
         assert len(d["students"]) <= d["page_size"]
         # search
-        r2 = session.get(f"{API}/students?q=arjun", timeout=15)
+        r2 = edu_session.get(f"{API}/students?q=arjun", timeout=15)
         assert r2.status_code == 200
         names = [s["name"].lower() for s in r2.json()["students"]]
         assert any("arjun" in n for n in names)
         # pagination
-        r3 = session.get(f"{API}/students?page=2", timeout=15)
+        r3 = edu_session.get(f"{API}/students?page=2", timeout=15)
         assert r3.status_code == 200 and r3.json()["page"] == 2
 
-    def test_student_detail_arjun(self, session):
-        r = session.get(f"{API}/search?q=arjun", timeout=15)
+    def test_student_detail_arjun(self, edu_session):
+        r = edu_session.get(f"{API}/search?q=arjun", timeout=15)
         assert r.status_code == 200
         students = r.json()["students"]
         assert students, "Arjun not found in search"
         sid = students[0]["id"]
-        r2 = session.get(f"{API}/students/{sid}", timeout=15)
+        r2 = edu_session.get(f"{API}/students/{sid}", timeout=15)
         assert r2.status_code == 200
         s = r2.json()
         assert "arjun" in s["name"].lower()
         assert "signals" in s and "baseline" in s
 
-    def test_signals_endpoints(self, session):
-        r = session.get(f"{API}/signals", timeout=15)
+    def test_signals_endpoints(self, edu_session):
+        r = edu_session.get(f"{API}/signals", timeout=15)
         assert r.status_code == 200
         sigs = r.json()["signals"]
         assert len(sigs) > 0
         # filters
-        r2 = session.get(f"{API}/signals?severity=High", timeout=15)
+        r2 = edu_session.get(f"{API}/signals?severity=High", timeout=15)
         assert r2.status_code == 200
         assert all(s["severity"] == "High" for s in r2.json()["signals"])
         # detail
         sid = sigs[0]["id"]
-        r3 = session.get(f"{API}/signals/{sid}", timeout=15)
+        r3 = edu_session.get(f"{API}/signals/{sid}", timeout=15)
         assert r3.status_code == 200
         assert r3.json()["id"] == sid
 
-    def test_reviews(self, session):
-        r = session.get(f"{API}/reviews", timeout=15)
+    def test_reviews(self, edu_session):
+        r = edu_session.get(f"{API}/reviews", timeout=15)
         assert r.status_code == 200
         revs = r.json()["reviews"]
         assert len(revs) >= 1
         rid = revs[0]["id"]
-        r2 = session.get(f"{API}/reviews/{rid}", timeout=15)
+        r2 = edu_session.get(f"{API}/reviews/{rid}", timeout=15)
         assert r2.status_code == 200
         assert "signal" in r2.json() and "student" in r2.json()
 
-    def test_analytics(self, session):
-        r = session.get(f"{API}/analytics", timeout=15)
+    def test_analytics(self, edu_session):
+        r = edu_session.get(f"{API}/analytics", timeout=15)
         assert r.status_code == 200
         for k in ["signals_by_semester", "categories", "stability",
                   "course_distribution", "risk_trend", "intervention_outcomes"]:
             assert k in r.json()
 
-    def test_courses(self, session):
-        r = session.get(f"{API}/courses", timeout=15)
+    def test_courses(self, edu_session):
+        r = edu_session.get(f"{API}/courses", timeout=15)
         assert r.status_code == 200
         courses = r.json()["courses"]
         assert len(courses) >= 5
         code = courses[0]["code"]
-        r2 = session.get(f"{API}/courses/{code}", timeout=15)
+        r2 = edu_session.get(f"{API}/courses/{code}", timeout=15)
         assert r2.status_code == 200
         assert "roster" in r2.json() and "signal_list" in r2.json()
 
-    def test_data_sources(self, session):
-        r = session.get(f"{API}/data-sources", timeout=15)
+    def test_data_sources(self, edu_session):
+        r = edu_session.get(f"{API}/data-sources", timeout=15)
         assert r.status_code == 200
         assert len(r.json()["sources"]) >= 1
 
-    def test_audit_log(self, session):
-        r = session.get(f"{API}/audit-log", timeout=15)
+    def test_audit_log(self, edu_session):
+        r = edu_session.get(f"{API}/audit-log", timeout=15)
         assert r.status_code == 200
         assert "events" in r.json()
 
-    def test_settings(self, session):
-        r = session.get(f"{API}/settings", timeout=15)
+    def test_settings(self, edu_session):
+        r = edu_session.get(f"{API}/settings", timeout=15)
         assert r.status_code == 200
         assert "thresholds" in r.json()
 
-    def test_search_arjun(self, session):
-        r = session.get(f"{API}/search?q=arjun", timeout=15)
+    def test_search_arjun(self, edu_session):
+        r = edu_session.get(f"{API}/search?q=arjun", timeout=15)
         assert r.status_code == 200
         d = r.json()
         assert any("arjun" in s["name"].lower() for s in d["students"])
@@ -158,65 +256,65 @@ class TestDataEndpoints:
 
 # ---------- LLM explain + signal update + review workflow ----------
 class TestWorkflows:
-    def test_llm_explain_non_accusatory(self, session):
-        r = session.get(f"{API}/signals", timeout=15)
+    def test_llm_explain_non_accusatory(self, edu_session):
+        r = edu_session.get(f"{API}/signals", timeout=15)
         sid = r.json()["signals"][0]["id"]
-        r2 = session.post(f"{API}/signals/{sid}/explain", timeout=60)
+        r2 = edu_session.post(f"{API}/signals/{sid}/explain", timeout=60)
         assert r2.status_code == 200, r2.text
         data = r2.json()
         text = data["explanation"].lower()
         for bad in ACCUSATORY:
             assert bad not in text, f"Accusatory word found: {bad}"
         # persistence
-        r3 = session.get(f"{API}/signals/{sid}", timeout=15)
+        r3 = edu_session.get(f"{API}/signals/{sid}", timeout=15)
         assert r3.json().get("explanation")
 
-    def test_signal_status_patch_creates_audit(self, session):
-        sigs = session.get(f"{API}/signals", timeout=15).json()["signals"]
+    def test_signal_status_patch_creates_audit(self, edu_session):
+        sigs = edu_session.get(f"{API}/signals", timeout=15).json()["signals"]
         sid = sigs[0]["id"]
-        before = len(session.get(f"{API}/audit-log", timeout=15).json()["events"])
-        r = session.patch(f"{API}/signals/{sid}", json={"status": "Under Review"}, timeout=15)
+        before = len(edu_session.get(f"{API}/audit-log", timeout=15).json()["events"])
+        r = edu_session.patch(f"{API}/signals/{sid}", json={"status": "Under Review"}, timeout=15)
         assert r.status_code == 200
-        after = len(session.get(f"{API}/audit-log", timeout=15).json()["events"])
+        after = len(edu_session.get(f"{API}/audit-log", timeout=15).json()["events"])
         assert after > before
-        got = session.get(f"{API}/signals/{sid}", timeout=15).json()
+        got = edu_session.get(f"{API}/signals/{sid}", timeout=15).json()
         assert got["status"] == "Under Review"
 
-    def test_review_note_and_action(self, session):
-        rid = session.get(f"{API}/reviews", timeout=15).json()["reviews"][0]["id"]
-        note_res = session.post(f"{API}/reviews/{rid}/notes",
+    def test_review_note_and_action(self, edu_session):
+        rid = edu_session.get(f"{API}/reviews", timeout=15).json()["reviews"][0]["id"]
+        note_res = edu_session.post(f"{API}/reviews/{rid}/notes",
                                 json={"text": "TEST_note from pytest"}, timeout=15)
         assert note_res.status_code == 200
         assert note_res.json()["text"] == "TEST_note from pytest"
         # verify persisted
-        rev = session.get(f"{API}/reviews/{rid}", timeout=15).json()
+        rev = edu_session.get(f"{API}/reviews/{rid}", timeout=15).json()
         assert any(n["text"] == "TEST_note from pytest" for n in rev.get("notes", []))
         # action
-        act = session.post(f"{API}/reviews/{rid}/action",
-                           json={"action": "acknowledge"}, timeout=15)
+        act = edu_session.post(f"{API}/reviews/{rid}/action",
+                           json={"action": "continue_monitoring"}, timeout=15)
         assert act.status_code == 200
         j = act.json()
         assert j["review_status"] == "In Progress"
         assert j["signal_status"] == "Under Review"
 
-    def test_review_action_invalid(self, session):
-        rid = session.get(f"{API}/reviews", timeout=15).json()["reviews"][0]["id"]
-        r = session.post(f"{API}/reviews/{rid}/action",
+    def test_review_action_invalid(self, edu_session):
+        rid = edu_session.get(f"{API}/reviews", timeout=15).json()["reviews"][0]["id"]
+        r = edu_session.post(f"{API}/reviews/{rid}/action",
                          json={"action": "nope"}, timeout=15)
         assert r.status_code == 400
 
 
 # ---------- Settings & demo reset ----------
 class TestSettings:
-    def test_thresholds_patch(self, session):
-        r = session.patch(f"{API}/settings/thresholds",
+    def test_thresholds_patch(self, edu_session):
+        r = edu_session.patch(f"{API}/settings/thresholds",
                           json={"watch": 21, "meaningful": 41, "high": 71}, timeout=15)
         assert r.status_code == 200
         assert r.json()["thresholds"]["high"] == 71
 
-    def test_demo_reset(self, session):
-        r = session.post(f"{API}/demo/reset", timeout=60)
+    def test_demo_reset(self, edu_session):
+        r = edu_session.post(f"{API}/demo/reset", timeout=60)
         assert r.status_code == 200
         # ensure data still present after reset
-        r2 = session.get(f"{API}/students", timeout=15)
+        r2 = edu_session.get(f"{API}/students", timeout=15)
         assert r2.status_code == 200 and r2.json()["total"] >= 100

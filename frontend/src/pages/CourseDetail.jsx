@@ -32,6 +32,30 @@ export default function CourseDetail() {
         <MetricCard label="Flagged Students" value={c.roster.length} testid="course-flagged" />
       </div>
 
+      <ChartCard testid="course-health" title="Course Health" subtitle="Is behavioral change concentrated in this course, or in specific students?">
+        <div className="grid grid-cols-2 sm:grid-cols-5 gap-3">
+          {[["Students", c.health.students], ["Stable", c.health.stable], ["Watch", c.health.watch],
+            ["Meaningful Deviation", c.health.meaningful_deviation], ["High Deviation", c.health.high_deviation]].map(([l, v]) => (
+            <div key={l} className="rounded-lg border border-border bg-muted/20 p-3 text-center">
+              <div className="text-xl font-bold tabular-nums text-foreground">{v}</div>
+              <div className="text-[10px] uppercase tracking-wider text-muted-foreground mt-0.5">{l}</div>
+            </div>
+          ))}
+        </div>
+        <div className="mt-5">
+          <p className="text-xs font-semibold uppercase tracking-wider text-muted-foreground mb-2">Assessment patterns by semester</p>
+          <div className="space-y-1.5">
+            {c.assessment_patterns.map((a) => (
+              <div key={a.semester} className="flex items-center justify-between rounded-lg border border-border px-3 py-2 text-sm">
+                <span className="text-foreground font-medium">{a.semester}</span>
+                <span className={a.status === "Stable" ? "text-emerald-400 text-xs" : "text-amber-400 text-xs"}>{a.status}{a.signal_count > 0 ? ` · ${a.signal_count} signal${a.signal_count !== 1 ? "s" : ""}` : ""}</span>
+              </div>
+            ))}
+          </div>
+          <p className="text-[11px] text-muted-foreground mt-2">Course-wide patterns help distinguish a student-specific change from an assessment- or course-wide shift — reducing false positives.</p>
+        </div>
+      </ChartCard>
+
       <Tabs defaultValue="students" className="w-full">
         <TabsList data-testid="course-tabs">
           <TabsTrigger value="students">Students</TabsTrigger>

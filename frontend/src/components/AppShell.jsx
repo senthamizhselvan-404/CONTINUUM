@@ -3,7 +3,7 @@ import { NavLink, useNavigate } from "react-router-dom";
 import {
   LayoutDashboard, Users, Radar, ClipboardCheck, BarChart3, BookOpen,
   Database, ScrollText, Settings as SettingsIcon, Search, Bell, Sun, Moon,
-  PanelLeftClose, PanelLeft, LogOut, ChevronRight, Radio,
+  PanelLeftClose, PanelLeft, LogOut, ChevronRight, Radio, GitCommitVertical, ShieldCheck,
 } from "lucide-react";
 import api from "@/lib/api";
 import { cn } from "@/lib/utils";
@@ -17,16 +17,26 @@ import {
 } from "@/components/ui/dropdown-menu";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 
-const NAV = [
+const NAV_FULL = [
   { to: "/dashboard", label: "Overview", icon: LayoutDashboard },
+  { to: "/reviews", label: "Review Queue", icon: ClipboardCheck },
   { to: "/students", label: "Students", icon: Users },
   { to: "/signals", label: "Risk Signals", icon: Radar },
-  { to: "/reviews", label: "Reviews", icon: ClipboardCheck },
-  { to: "/analytics", label: "Analytics", icon: BarChart3 },
   { to: "/courses", label: "Courses", icon: BookOpen },
-  { to: "/data-sources", label: "Data Sources", icon: Database },
+  { to: "/analytics", label: "Analytics", icon: BarChart3 },
   { to: "/audit-log", label: "Audit Log", icon: ScrollText },
+  { to: "/data-sources", label: "Data Sources", icon: Database },
   { to: "/settings", label: "Settings", icon: SettingsIcon },
+];
+
+// Student Demo accounts only see their own overview, personal signals,
+// academic timeline and data/privacy center — no institution-wide or
+// administrative views, and no alarming "risk" terminology.
+const NAV_STUDENT = [
+  { to: "/dashboard", label: "Overview", icon: LayoutDashboard },
+  { to: "/signals", label: "My Signals", icon: Radar },
+  { to: "/timeline", label: "Academic Timeline", icon: GitCommitVertical },
+  { to: "/data", label: "My Data", icon: ShieldCheck },
 ];
 
 function GlobalSearch() {
@@ -156,8 +166,9 @@ export default function AppShell({ children }) {
   const { theme, toggle } = useTheme();
   const { user, logout } = useAuth();
   const nav = useNavigate();
+  const NAV = user?.role === "student" ? NAV_STUDENT : NAV_FULL;
 
-  const doLogout = async () => { await logout(); nav("/login"); };
+  const doLogout = async () => { const wasEducator = user?.role === "educator"; await logout(); nav(wasEducator ? "/educator/login" : "/login"); };
 
   const SidebarInner = (
     <>

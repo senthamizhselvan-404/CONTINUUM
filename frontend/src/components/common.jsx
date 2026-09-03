@@ -30,6 +30,16 @@ export const STATUS_CLS = {
   "Dismissed": "bg-muted text-muted-foreground border-border",
   "Open": "bg-sky-500/10 text-sky-400 border-sky-500/20",
   "In Progress": "bg-indigo-500/10 text-indigo-400 border-indigo-500/20",
+  "Context Requested": "bg-purple-500/10 text-purple-400 border-purple-500/20",
+  "Context Received": "bg-indigo-500/10 text-indigo-400 border-indigo-500/20",
+  "Follow-up": "bg-amber-500/10 text-amber-400 border-amber-500/20",
+  "Escalated": "bg-rose-500/10 text-rose-400 border-rose-500/20",
+};
+
+export const BASELINE_MATURITY_CLS = {
+  building: "bg-muted text-muted-foreground border-border",
+  developing: "bg-sky-500/10 text-sky-400 border-sky-500/20",
+  established: "bg-emerald-500/10 text-emerald-400 border-emerald-500/20",
 };
 
 export function SeverityBadge({ severity, testid }) {
@@ -61,6 +71,34 @@ export function StatusBadge({ status, testid }) {
         (STATUS_CLS[status] || "").includes("indigo") ? "bg-indigo-500" :
         (STATUS_CLS[status] || "").includes("sky") ? "bg-sky-500" : "bg-muted-foreground")} />
       {status}
+    </span>
+  );
+}
+
+export function ConfidenceBadge({ confidence, testid }) {
+  if (confidence == null) return null;
+  const tone = confidence >= 70 ? "bg-emerald-500/10 text-emerald-400 border-emerald-500/20"
+    : confidence >= 50 ? "bg-sky-500/10 text-sky-400 border-sky-500/20"
+    : "bg-muted text-muted-foreground border-border";
+  return (
+    <span data-testid={testid} title="Confidence that this deviation is a meaningful, evidenced pattern — independent of severity (magnitude)."
+      className={cn("inline-flex items-center gap-1.5 rounded-md border px-2 py-0.5 text-xs font-medium tabular-nums", tone)}>
+      Confidence {confidence}%
+    </span>
+  );
+}
+
+export function BaselineStatusBadge({ status, testid }) {
+  if (!status) return null;
+  const cls = {
+    building: "bg-muted text-muted-foreground border-border",
+    developing: "bg-sky-500/10 text-sky-400 border-sky-500/20",
+    established: "bg-emerald-500/10 text-emerald-400 border-emerald-500/20",
+  }[status.key] || "bg-muted text-muted-foreground border-border";
+  return (
+    <span data-testid={testid} title={status.detail}
+      className={cn("inline-flex items-center gap-1.5 rounded-md border px-2 py-0.5 text-xs font-medium", cls)}>
+      Baseline: {status.label}
     </span>
   );
 }

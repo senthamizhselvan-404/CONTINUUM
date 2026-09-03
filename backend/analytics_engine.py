@@ -98,7 +98,7 @@ def calculate_longitudinal_trend(series: list[float]) -> float:
 
 def deviation_index(writing: float, submission: float, performance: float,
                     longitudinal: float) -> int:
-    """generate the Prototype Behavioral Deviation Index (0-100)."""
+    """generate the Prototype Behavioral Change Index (0-100)."""
     score = (
         writing * WEIGHTS["writing"]
         + submission * WEIGHTS["submission"]
@@ -106,6 +106,82 @@ def deviation_index(writing: float, submission: float, performance: float,
         + longitudinal * WEIGHTS["longitudinal"]
     )
     return int(round(min(max(score, 0), 100)))
+
+
+def calculate_confidence(factors: dict, evidence_count: int = 3, persistence: int = 1) -> int:
+    """Confidence that an observed change is meaningful — independent of severity.
+
+    Severity measures the MAGNITUDE of deviation. Confidence measures how much
+    EVIDENCE supports treating that deviation as a real, persistent pattern
+    (how many dimensions agree, how many observations it spans, how long it
+    has persisted) rather than noise. A large one-off deviation can carry low
+    confidence; a moderate but well-evidenced, repeated deviation can carry
+    high confidence.
+    """
+    dims = [factors.get("writing", 0), factors.get("submission", 0), factors.get("performance", 0)]
+    agreeing = len([v for v in dims if v >= 30])
+    avg_dev = sum(dims) / max(1, len(dims))
+    conf = 42 + agreeing * 11 + min(20, avg_dev * 0.22) + min(12, evidence_count * 2.4) + min(10, persistence * 2.5)
+    return int(round(min(97, max(32, conf))))
+
+
+def multi_signal_agreement(factors: dict, threshold: int = 30) -> int:
+    """How many independent behavioral dimensions cross the deviation threshold together."""
+    dims = [factors.get("writing", 0), factors.get("submission", 0), factors.get("performance", 0)]
+    return len([v for v in dims if v >= threshold])
+
+
+def review_priority(severity: str, confidence: int, agreement: int, persistence: int) -> dict:
+    """Internal review-priority label (not a guilt score) explaining why a case ranks where it does."""
+    weight = {"High": 3, "Moderate": 2, "Low": 1}.get(severity, 1)
+    score = weight * 10 + agreement * 6 + persistence * 2 + (confidence >= 70) * 8
+    if score >= 34:
+        label = "High"
+    elif score >= 22:
+        label = "Moderate"
+    else:
+        label = "Low"
+    dims = agreement
+    explanation = (
+        f"{dims} behavioral dimension{'s' if dims != 1 else ''} changed together across "
+        f"{persistence} consecutive observation{'s' if persistence != 1 else ''}, with "
+        f"{'strong' if confidence >= 70 else 'moderate' if confidence >= 50 else 'limited'} supporting evidence."
+    )
+    return {"label": label, "explanation": explanation}
+
+
+def change_breakdown(factors: dict) -> tuple[list, int]:
+    """Decompose the Behavioral Change Index into the contributing factors that moved it,
+    e.g. for a 'Why did this change?' breakdown. Returns (breakdown_list, total_points) where
+    total_points is exactly the sum of the listed points, so callers can derive a consistent
+    'previous period' baseline as current_index - total_points.
+    """
+    parts = [
+        ("Submission timing", "submission"),
+        ("Writing characteristics", "writing"),
+        ("Grade variation", "performance"),
+        ("Course activity", "longitudinal"),
+    ]
+    breakdown = [{"label": label, "points": round(factors.get(key, 0) * WEIGHTS[key] / 2)} for label, key in parts]
+    total = sum(b["points"] for b in breakdown)
+    return breakdown, total
+
+
+def baseline_maturity(observation_count: int) -> dict:
+    """How much historical signal exists to compare current behavior against.
+
+    Anomaly detection is weak without history — a new student's first few
+    submissions should never read as highly anomalous just because there is
+    not yet enough data to know what 'normal' looks like for them.
+    """
+    if observation_count >= 8:
+        return {"key": "established", "label": "Established",
+                "detail": f"Baseline established after {observation_count} academic submissions."}
+    if observation_count >= 3:
+        return {"key": "developing", "label": "Developing",
+                "detail": f"{observation_count} submissions observed — baseline still developing."}
+    return {"key": "building", "label": "Building",
+            "detail": f"{observation_count} submission(s) observed — Continuum needs more history before drawing comparisons."}
 
 
 def generate_risk_signal(student_name: str, writing: float, submission: float,

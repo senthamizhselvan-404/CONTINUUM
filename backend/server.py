@@ -91,17 +91,24 @@ def _set_cookie(response: Response, token: str, request: Request):
                         samesite="none" if secure else "lax", path="/", max_age=7 * 24 * 3600)
 
 
-async def _upsert_user(email: str, name: str, picture: str, role: str = "reviewer") -> dict:
+async def _upsert_user(email: str, name: str, picture: str, role: str = "student",
+                       extra: dict = None) -> dict:
+    extra = extra or {}
     existing = await db.users.find_one({"email": email}, {"_id": 0, "created_at": 0, "password_hash": 0})
     if existing:
-        await db.users.update_one({"email": email}, {"$set": {"name": name, "picture": picture}})
-        return {**existing, "name": name, "picture": picture}
+        await db.users.update_one({"email": email}, {"$set": {"name": name, "picture": picture, "role": role, **extra}})
+        return {**existing, "name": name, "picture": picture, "role": role, **extra}
     user_id = f"user_{uuid.uuid4().hex[:12]}"
     doc = {"user_id": user_id, "email": email, "name": name, "picture": picture,
            "role": role, "institution": "Northbridge University",
-           "created_at": datetime.now(timezone.utc)}
+           "created_at": datetime.now(timezone.utc), **extra}
     await db.users.insert_one(doc)
     return {k: v for k, v in doc.items() if k not in ("_id", "created_at")}
+
+
+def require_educator(user: dict) -> None:
+    if user.get("role") != "educator":
+        raise HTTPException(status_code=403, detail="Educator access required")
 
 
 async def get_current_user(request: Request) -> dict:
@@ -131,8 +138,10 @@ async def get_current_user(request: Request) -> dict:
 
 @api.post("/auth/demo")
 async def auth_demo(request: Request, response: Response):
+    alex = await db.students.find_one({"student_id": "STU-2024-1000"}, {"_id": 0, "id": 1})
     user = await _upsert_user("demo@continuum.edu", "Alex Morgan",
-                              seed_data._avatar("Alex Morgan"), "reviewer")
+                              seed_data._avatar("Alex Morgan"), "student",
+                              extra={"student_id": alex["id"] if alex else None})
     token = await _create_session(user["user_id"])
     _set_cookie(response, token, request)
     return {"user": user}
@@ -194,8 +203,41 @@ CLEAN = {"_id": 0}
 
 
 # ---------------------------------------------------------------- overview
+async def _personal_overview(user: dict):
+    sid = user.get("student_id")
+    s = sid and await db.students.find_one({"id": sid}, CLEAN)
+    if not s:
+        raise HTTPException(status_code=404, detail="No linked student record for this account")
+    semesters = await db.semesters.find({}, CLEAN).to_list(10)
+    perf = (s.get("performance") or {}).get("series") or []
+    series = [{"semester": semesters[i]["label"], "term": semesters[i]["term"], "value": perf[i]}
+              for i in range(min(len(perf), len(semesters)))]
+    sigs = await db.signals.find({"student_id": sid}, CLEAN).to_list(50)
+    sigs = sorted(sigs, key=lambda x: x.get("detected_iso", ""), reverse=True)
+    dist = {}
+    for sg in sigs:
+        dist[sg["signal_type"]] = dist.get(sg["signal_type"], 0) + 1
+    default_maturity = ae.baseline_maturity(12)
+    return {
+        "personal": True,
+        "student": {"name": s["name"], "student_id": s["student_id"], "avatar": s.get("avatar"),
+                    "program": s["program"], "year": s.get("year"),
+                    "deviation_index": s["deviation_index"], "band": s["band"],
+                    "status_label": s["status_label"], "last_activity": s.get("last_activity"),
+                    "previous_index": s.get("previous_index"), "index_delta": s.get("index_delta"),
+                    "change_breakdown": s.get("change_breakdown") or [],
+                    "baseline_status": s.get("baseline_status") or default_maturity},
+        "performance_series": series,
+        "recent_signals": sigs[:5],
+        "signal_count": len(sigs),
+        "distribution": [{"type": k, "count": v} for k, v in dist.items()],
+    }
+
+
 @api.get("/overview")
 async def overview(user: dict = Depends(get_current_user)):
+    if user.get("role") == "student":
+        return await _personal_overview(user)
     inst = await db.institution.find_one({}, CLEAN)
     semesters = await db.semesters.find({}, CLEAN).to_list(10)
     students = await db.students.find({}, {"_id": 0, "deviation_index": 1, "performance": 1}).to_list(500)
@@ -231,6 +273,11 @@ async def list_students(user: dict = Depends(get_current_user),
                         q: str = "", status: str = "all", program: str = "all",
                         sort: str = "deviation", order: str = "desc",
                         page: int = 1, page_size: int = 12):
+    if user.get("role") == "student":
+        s = await db.students.find_one({"id": user.get("student_id")},
+            {"_id": 0, "baseline": 0, "writing_features": 0, "submission_behavior": 0, "semesters": 0})
+        docs = [s] if s else []
+        return {"total": len(docs), "page": 1, "page_size": len(docs) or 1, "students": docs}
     docs = await db.students.find({}, {"_id": 0, "baseline": 0, "writing_features": 0,
                                        "submission_behavior": 0, "semesters": 0}).to_list(500)
     if q:
@@ -251,6 +298,7 @@ async def list_students(user: dict = Depends(get_current_user),
 
 @api.get("/students-stats")
 async def students_stats(user: dict = Depends(get_current_user)):
+    require_educator(user)
     total = await db.students.count_documents({})
     month_prefix = datetime.now(timezone.utc).strftime("%Y-%m")
     new_month = await db.students.count_documents({"created_at": {"$regex": f"^{month_prefix}"}})
@@ -264,6 +312,8 @@ async def students_stats(user: dict = Depends(get_current_user)):
 
 @api.get("/students/{student_id}")
 async def get_student(student_id: str, user: dict = Depends(get_current_user)):
+    if user.get("role") == "student" and user.get("student_id") != student_id:
+        raise HTTPException(status_code=403, detail="You can only view your own student record")
     s = await db.students.find_one({"id": student_id}, CLEAN)
     if not s:
         raise HTTPException(status_code=404, detail="Student not found")
@@ -282,6 +332,8 @@ async def list_signals(user: dict = Depends(get_current_user),
                        q: str = "", severity: str = "all", signal_type: str = "all",
                        course: str = "all", semester: str = "all", status: str = "all"):
     docs = await db.signals.find({}, CLEAN).to_list(1000)
+    if user.get("role") == "student":
+        docs = [d for d in docs if d["student_id"] == user.get("student_id")]
     if q:
         ql = q.lower()
         docs = [d for d in docs if ql in d["student_name"].lower() or ql in d["course_code"].lower()]
@@ -304,16 +356,43 @@ async def get_signal(signal_id: str, user: dict = Depends(get_current_user)):
     s = await db.signals.find_one({"id": signal_id}, CLEAN)
     if not s:
         raise HTTPException(status_code=404, detail="Signal not found")
+    if user.get("role") == "student" and s["student_id"] != user.get("student_id"):
+        raise HTTPException(status_code=403, detail="You can only view your own signals")
     student = await db.students.find_one({"id": s["student_id"]},
                                          {"_id": 0, "baseline": 1, "performance": 1,
                                           "submission_behavior": 1, "writing_features": 1,
-                                          "semesters": 1, "status_label": 1, "year": 1})
+                                          "semesters": 1, "status_label": 1, "year": 1,
+                                          "baseline_status": 1})
     s["student_detail"] = student
+    s.setdefault("confidence", ae.calculate_confidence(s.get("factors", {})))
+    s.setdefault("persistence", 3)
+    s.setdefault("multi_signal_agreement", ae.multi_signal_agreement(s.get("factors", {})))
+    s.setdefault("review_priority", ae.review_priority(s.get("severity", "Low"), s["confidence"],
+                                                        s["multi_signal_agreement"], s["persistence"]))
+    course = await db.courses.find_one({"code": s.get("course_code")}, CLEAN)
+    if course and student:
+        personal_hours = (student.get("submission_behavior") or {}).get("timeline") or []
+        recent = round(sum(personal_hours[-2:]) / len(personal_hours[-2:]), 1) if personal_hours else None
+        hist = round(sum(personal_hours[:-2]) / len(personal_hours[:-2]), 1) if len(personal_hours) > 2 else None
+        cohort_median = course.get("median_submission_hours")
+        interp = None
+        if recent is not None and cohort_median is not None:
+            close_to_cohort = abs(recent - cohort_median) <= 3
+            far_from_personal = hist is not None and abs(recent - hist) >= 4
+            if far_from_personal and close_to_cohort:
+                interp = "Differs substantially from this student's personal baseline, but is closer to the course norm for this assessment."
+            elif far_from_personal:
+                interp = "Differs from both this student's personal baseline and the course norm — a stronger basis for review."
+            else:
+                interp = "Consistent with this student's personal baseline."
+        s["cohort_context"] = {"personal_baseline_hours": hist, "recent_hours": recent,
+                               "course_median_hours": cohort_median, "interpretation": interp}
     return s
 
 
 @api.post("/signals/{signal_id}/explain")
 async def explain_signal(signal_id: str, user: dict = Depends(get_current_user)):
+    require_educator(user)
     s = await db.signals.find_one({"id": signal_id}, CLEAN)
     if not s:
         raise HTTPException(status_code=404, detail="Signal not found")
@@ -333,8 +412,64 @@ async def explain_signal(signal_id: str, user: dict = Depends(get_current_user))
     return {"explanation": text, "source": source}
 
 
+@api.post("/signals/{signal_id}/context")
+async def submit_context(signal_id: str, request: Request, user: dict = Depends(get_current_user)):
+    """Student-submitted context/explanation for a behavioral change. Not a determination —
+    just additional information shared with the assigned educator for human review."""
+    body = await request.json()
+    text = (body.get("text") or "").strip()
+    if not text:
+        raise HTTPException(status_code=400, detail="Context text is required")
+    s = await db.signals.find_one({"id": signal_id}, CLEAN)
+    if not s:
+        raise HTTPException(status_code=404, detail="Signal not found")
+    if user.get("role") == "student" and s["student_id"] != user.get("student_id"):
+        raise HTTPException(status_code=403, detail="You can only add context to your own signals")
+    context = {"text": text, "submitted_at": datetime.now(timezone.utc).strftime("%d %b %Y, %H:%M"),
+               "status": "Shared with assigned educator"}
+    await db.signals.update_one({"id": signal_id}, {"$set": {"context": context, "context_requested": False}})
+    review = await db.reviews.find_one({"signal_id": signal_id}, CLEAN)
+    if review:
+        await db.reviews.update_one({"id": review["id"]}, {"$set": {"status": "Context Received", "context": context}})
+    await _audit(user, "Context received", signal_id,
+                 f"{s['student_name']} shared context for {s['signal_type']} ({s['course_code']}).",
+                 student_id=s["student_id"])
+    return {"ok": True, "context": context}
+
+
+@api.post("/signals/{signal_id}/request-context")
+async def request_context_for_signal(signal_id: str, user: dict = Depends(get_current_user)):
+    require_educator(user)
+    s = await db.signals.find_one({"id": signal_id}, CLEAN)
+    if not s:
+        raise HTTPException(status_code=404, detail="Signal not found")
+    await db.signals.update_one({"id": signal_id}, {"$set": {"context_requested": True}})
+    review = await db.reviews.find_one({"signal_id": signal_id}, CLEAN)
+    if review:
+        await db.reviews.update_one({"id": review["id"]}, {"$set": {"status": "Context Requested"}})
+    await _audit(user, "Context requested", signal_id,
+                 f"Context requested from {s['student_name']} for {s['signal_type']} ({s['course_code']}).",
+                 student_id=s["student_id"])
+    return {"ok": True, "context_requested": True}
+
+
+@api.post("/reviews/{review_id}/request-context")
+async def request_context(review_id: str, user: dict = Depends(get_current_user)):
+    require_educator(user)
+    r = await db.reviews.find_one({"id": review_id}, CLEAN)
+    if not r:
+        raise HTTPException(status_code=404, detail="Review not found")
+    await db.reviews.update_one({"id": review_id}, {"$set": {"status": "Context Requested"}})
+    await db.signals.update_one({"id": r["signal_id"]}, {"$set": {"context_requested": True}})
+    await _audit(user, "Context requested", review_id,
+                 f"Context requested from {r['student_name']} for {r['signal_type']} ({r['course_code']}).",
+                 student_id=r["student_id"])
+    return {"ok": True, "status": "Context Requested"}
+
+
 @api.patch("/signals/{signal_id}")
 async def update_signal(signal_id: str, request: Request, user: dict = Depends(get_current_user)):
+    require_educator(user)
     body = await request.json()
     new_status = body.get("status")
     s = await db.signals.find_one({"id": signal_id}, CLEAN)
@@ -350,13 +485,21 @@ async def update_signal(signal_id: str, request: Request, user: dict = Depends(g
 @api.get("/reviews")
 async def list_reviews(user: dict = Depends(get_current_user), status: str = "all"):
     docs = await db.reviews.find({}, CLEAN).to_list(500)
+    if user.get("role") == "student":
+        docs = [d for d in docs if d["student_id"] == user.get("student_id")]
     if status != "all":
         docs = [d for d in docs if d["status"] == status]
+    sig_ids = [d["signal_id"] for d in docs]
+    sigs = await db.signals.find({"id": {"$in": sig_ids}}, {"_id": 0, "id": 1, "confidence": 1}).to_list(1000)
+    conf_by_id = {s["id"]: s.get("confidence") for s in sigs}
+    for d in docs:
+        d["confidence"] = conf_by_id.get(d["signal_id"])
     return {"total": len(docs), "reviews": docs}
 
 
 @api.get("/reviews/{review_id}")
 async def get_review(review_id: str, user: dict = Depends(get_current_user)):
+    require_educator(user)
     r = await db.reviews.find_one({"id": review_id}, CLEAN)
     if not r:
         raise HTTPException(status_code=404, detail="Review not found")
@@ -367,6 +510,7 @@ async def get_review(review_id: str, user: dict = Depends(get_current_user)):
 
 @api.post("/reviews/{review_id}/notes")
 async def add_note(review_id: str, request: Request, user: dict = Depends(get_current_user)):
+    require_educator(user)
     body = await request.json()
     note = {"id": uuid.uuid4().hex[:8], "reviewer": user["name"],
             "timestamp": datetime.now(timezone.utc).strftime("%d %b %Y, %H:%M"),
@@ -381,16 +525,17 @@ async def add_note(review_id: str, request: Request, user: dict = Depends(get_cu
 
 
 ACTION_STATUS = {
-    "acknowledge": ("Under Review", "In Progress", "Acknowledged"),
-    "expected": ("Dismissed", "Resolved", "Marked as expected behavior"),
-    "request_info": ("Needs Follow-up", "Needs Follow-up", "Requested additional information"),
-    "escalate": ("Needs Follow-up", "In Progress", "Escalated"),
-    "dismiss": ("Dismissed", "Resolved", "Dismissed"),
+    "continue_monitoring": ("Under Review", "In Progress", "Continue monitoring"),
+    "expected_behavior": ("Resolved", "Resolved", "Marked as expected behavior"),
+    "explained_context": ("Resolved", "Resolved", "Explained by context"),
+    "follow_up": ("Needs Follow-up", "Follow-up", "Follow-up meeting scheduled"),
+    "escalate": ("Needs Follow-up", "Escalated", "Escalated for institutional review"),
 }
 
 
 @api.post("/reviews/{review_id}/action")
 async def review_action(review_id: str, request: Request, user: dict = Depends(get_current_user)):
+    require_educator(user)
     body = await request.json()
     action = body.get("action")
     if action not in ACTION_STATUS:
@@ -407,8 +552,36 @@ async def review_action(review_id: str, request: Request, user: dict = Depends(g
 
 
 # ---------------------------------------------------------------- analytics
+async def _personal_analytics(user: dict):
+    sid = user.get("student_id")
+    s = sid and await db.students.find_one({"id": sid}, CLEAN)
+    if not s:
+        raise HTTPException(status_code=404, detail="No linked student record for this account")
+    semesters = await db.semesters.find({}, CLEAN).to_list(10)
+    series = (s.get("performance") or {}).get("series") or []
+    grade_trend = [{"semester": semesters[i]["label"], "grade": series[i]}
+                   for i in range(min(len(series), len(semesters)))]
+    submission_behavior = s.get("submission_behavior") or {}
+    submission_timeline = [{"submission": i + 1, "hours_before": h}
+                           for i, h in enumerate(submission_behavior.get("timeline") or [])]
+    sigs = await db.signals.find({"student_id": sid}, CLEAN).to_list(50)
+    sigs = sorted(sigs, key=lambda x: x.get("detected_iso", ""), reverse=True)
+    return {
+        "personal": True,
+        "deviation_index": s["deviation_index"], "band": s["band"],
+        "status_label": s["status_label"], "factors": s["factors"],
+        "grade_trend": grade_trend,
+        "writing_features": s.get("writing_features") or [],
+        "submission_behavior": submission_behavior,
+        "submission_timeline": submission_timeline,
+        "signals": sigs,
+    }
+
+
 @api.get("/analytics")
 async def analytics(user: dict = Depends(get_current_user)):
+    if user.get("role") == "student":
+        return await _personal_analytics(user)
     signals = await db.signals.find({}, CLEAN).to_list(1000)
     semesters = await db.semesters.find({}, CLEAN).to_list(10)
     courses = await db.courses.find({}, CLEAN).to_list(50)
@@ -440,9 +613,46 @@ async def analytics(user: dict = Depends(get_current_user)):
                            "risk": round(8 + i * 4 + (12 if i == 4 else 0), 1),
                            "resolved": round(4 + i * 3, 1)})
 
+    # ---- emerging institutional patterns (possible contributing factors, never causal claims)
+    sem_labels = [s["label"] for s in semesters]
+    emerging_patterns = []
+
+    def _by_sem(stype):
+        d = {lbl: 0 for lbl in sem_labels}
+        for s in signals:
+            if s["signal_type"] == stype and s["semester"] in d:
+                d[s["semester"]] += 1
+        return d
+
+    def _rising_pattern(stype, title_fmt, factors):
+        d = _by_sem(stype)
+        last = sem_labels[-1]
+        hist = [d[lbl] for lbl in sem_labels[:-1]]
+        hist_avg = sum(hist) / len(hist) if hist else 0
+        if d[last] > 0 and d[last] > hist_avg:
+            pct = round((d[last] - hist_avg) / max(hist_avg, 1) * 100)
+            n_courses = len({s["course_code"] for s in signals if s["signal_type"] == stype and s["semester"] == last})
+            return {"title": title_fmt.format(pct=pct, last=last, n=d[last],
+                                              n_plural="s" if d[last] != 1 else "",
+                                              courses=n_courses, c_plural="s" if n_courses != 1 else ""),
+                    "factors": factors}
+        return None
+
+    if len(sem_labels) >= 2:
+        p1 = _rising_pattern("Submission Pattern Shift",
+            "Submission timing deviations increased {pct}% in {last} across {courses} course{c_plural}, relative to prior semesters.",
+            ["Deadline clustering", "Assessment schedule density", "Course workload", "Assessment format changes"])
+        if p1:
+            emerging_patterns.append(p1)
+        p2 = _rising_pattern("Writing Drift",
+            "Writing-style deviations rose {pct}% in {last} — {n} signal{n_plural} across {courses} course{c_plural}, relative to prior semesters.",
+            ["Assignment format changes", "Rubric or instructor changes", "Group project transitions", "Course workload"])
+        if p2:
+            emerging_patterns.append(p2)
+
     return {"signals_by_semester": signals_by_semester, "categories": categories,
             "stability": stability, "course_distribution": course_dist,
-            "risk_trend": risk_trend,
+            "risk_trend": risk_trend, "emerging_patterns": emerging_patterns,
             "intervention_outcomes": [
                 {"outcome": "Explained by context", "count": 21},
                 {"outcome": "Expected behavior", "count": 14},
@@ -454,11 +664,13 @@ async def analytics(user: dict = Depends(get_current_user)):
 # ---------------------------------------------------------------- courses
 @api.get("/courses")
 async def list_courses(user: dict = Depends(get_current_user)):
+    require_educator(user)
     return {"courses": await db.courses.find({}, CLEAN).to_list(50)}
 
 
 @api.get("/courses/{code}")
 async def get_course(code: str, user: dict = Depends(get_current_user)):
+    require_educator(user)
     c = await db.courses.find_one({"code": code}, CLEAN)
     if not c:
         raise HTTPException(status_code=404, detail="Course not found")
@@ -476,18 +688,43 @@ async def get_course(code: str, user: dict = Depends(get_current_user)):
     c["semester_trends"] = [{"semester": s["label"],
                              "signals": len([x for x in sigs if x["semester"] == s["label"]]),
                              "performance": 72 + i * 2} for i, s in enumerate(semesters)]
+
+    # ---- Course Health: is this student-specific or assessment/course-wide? -------------
+    bands = {"stable": 0, "watch": 0, "meaningful": 0, "high": 0}
+    for entry in roster:
+        bands[entry["band"]["key"]] = bands.get(entry["band"]["key"], 0) + 1
+    c["health"] = {
+        "students": c["students"], "stable": max(0, c["students"] - len(roster)) + bands["stable"],
+        "watch": bands["watch"], "meaningful_deviation": bands["meaningful"], "high_deviation": bands["high"],
+    }
+    c["assessment_patterns"] = []
+    for i, s in enumerate(semesters):
+        sem_sigs = [x for x in sigs if x["semester"] == s["label"]]
+        if not sem_sigs:
+            status = "Stable"
+        else:
+            types = {x["signal_type"] for x in sem_sigs}
+            if len(types) >= 3 or len(sem_sigs) >= 4:
+                status = "Multi-signal deviation increased"
+            elif any(x["signal_type"] == "Submission Pattern Shift" for x in sem_sigs):
+                status = "Submission-timing deviation increased"
+            else:
+                status = "Minor deviation observed"
+        c["assessment_patterns"].append({"semester": s["label"], "signal_count": len(sem_sigs), "status": status})
     return c
 
 
 # ---------------------------------------------------------------- data sources
 @api.get("/data-sources")
 async def data_sources(user: dict = Depends(get_current_user)):
+    require_educator(user)
     return {"sources": await db.data_sources.find({}, CLEAN).to_list(20)}
 
 
 # ---------------------------------------------------------------- audit
 @api.get("/audit-log")
 async def audit_log(user: dict = Depends(get_current_user), q: str = ""):
+    require_educator(user)
     docs = await db.audit_events.find({}, CLEAN).to_list(500)
     if q:
         ql = q.lower()
@@ -499,6 +736,7 @@ async def audit_log(user: dict = Depends(get_current_user), q: str = ""):
 # ---------------------------------------------------------------- settings
 @api.get("/settings")
 async def get_settings(user: dict = Depends(get_current_user)):
+    require_educator(user)
     s = await db.settings.find_one({"_key": "global"}, {"_id": 0, "_key": 0})
     users = await db.users.find({}, {"_id": 0, "created_at": 0, "password_hash": 0}).to_list(50)
     return {**s, "users": users, "sources": await db.data_sources.find({}, CLEAN).to_list(20)}
@@ -506,6 +744,7 @@ async def get_settings(user: dict = Depends(get_current_user)):
 
 @api.patch("/settings/thresholds")
 async def update_thresholds(request: Request, user: dict = Depends(get_current_user)):
+    require_educator(user)
     body = await request.json()
     await db.settings.update_one({"_key": "global"}, {"$set": {"thresholds": body}})
     await _audit(user, "Settings updated", "settings",
@@ -516,6 +755,7 @@ async def update_thresholds(request: Request, user: dict = Depends(get_current_u
 # ---------------------------------------------------------------- search
 @api.get("/search")
 async def search(user: dict = Depends(get_current_user), q: str = ""):
+    require_educator(user)
     if not q or len(q) < 1:
         return {"students": [], "signals": [], "courses": []}
     ql = q.lower()
@@ -635,6 +875,7 @@ async def _recompute_and_store(student):
         doc = {"id": sig_id, "student_id": student["id"], "student_name": student["name"],
                "student_avatar": student["avatar"], "program": student["program"],
                "detected": now.strftime("%d %b %Y"), "detected_iso": now.isoformat(), "source": "engine",
+               "context": None, "context_requested": False,
                "evidence": [
                    {"label": "Historical baseline", "value": "Prior semesters"},
                    {"label": "Current observation", "value": "Most recent semester"},
@@ -682,6 +923,7 @@ async def _ingest_rows(rows, user):
 
 @api.post("/students")
 async def add_student(request: Request, user: dict = Depends(get_current_user)):
+    require_educator(user)
     b = await request.json()
     sid = (b.get("student_id") or "").strip()
     if not sid or not b.get("full_name"):
@@ -711,6 +953,7 @@ async def add_student(request: Request, user: dict = Depends(get_current_user)):
 
 @api.get("/students/import/template")
 async def import_template(user: dict = Depends(get_current_user)):
+    require_educator(user)
     csv_text = import_utils.build_template_csv()
     return Response(content=csv_text, media_type="text/csv",
                     headers={"Content-Disposition": "attachment; filename=continuum_student_template.csv"})
@@ -718,6 +961,7 @@ async def import_template(user: dict = Depends(get_current_user)):
 
 @api.post("/students/import/preview")
 async def import_preview(file: UploadFile = File(...), user: dict = Depends(get_current_user)):
+    require_educator(user)
     content = await file.read()
     rows, errors = import_utils.parse_upload(file.filename, content)
     ex = await db.students.find({}, {"_id": 0, "student_id": 1}).to_list(2000)
@@ -733,6 +977,7 @@ async def import_preview(file: UploadFile = File(...), user: dict = Depends(get_
 
 @api.post("/students/import/commit")
 async def import_commit(file: UploadFile = File(...), user: dict = Depends(get_current_user)):
+    require_educator(user)
     content = await file.read()
     rows, errors = import_utils.parse_upload(file.filename, content)
     if not rows:
@@ -744,6 +989,7 @@ async def import_commit(file: UploadFile = File(...), user: dict = Depends(get_c
 
 @api.post("/students/import/demo")
 async def import_demo(user: dict = Depends(get_current_user)):
+    require_educator(user)
     rows, _ = import_utils.parse_upload("demo.csv", import_utils.build_template_csv().encode())
     result = await _ingest_rows(rows, user)
     return result
@@ -751,6 +997,7 @@ async def import_demo(user: dict = Depends(get_current_user)):
 
 @api.post("/students/{student_id}/records")
 async def add_record(student_id: str, request: Request, user: dict = Depends(get_current_user)):
+    require_educator(user)
     b = await request.json()
     s = await db.students.find_one({"id": student_id}, CLEAN)
     if not s:
@@ -772,6 +1019,7 @@ async def add_record(student_id: str, request: Request, user: dict = Depends(get
 
 @api.post("/students/{student_id}/records/import")
 async def import_records(student_id: str, file: UploadFile = File(...), user: dict = Depends(get_current_user)):
+    require_educator(user)
     content = await file.read()
     rows, errors = import_utils.parse_upload(file.filename, content)
     s = await db.students.find_one({"id": student_id}, CLEAN)

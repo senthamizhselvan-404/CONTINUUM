@@ -1,19 +1,19 @@
 import React, { useState } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { useParams, useNavigate } from "react-router-dom";
-import { ArrowLeft, Check, ThumbsUp, MessageSquarePlus, ArrowUpCircle, XCircle, Send } from "lucide-react";
+import { ArrowLeft, ThumbsUp, MessageSquareText, Eye, CalendarClock, ArrowUpCircle, Send, MessageSquarePlus } from "lucide-react";
 import { toast } from "sonner";
 import api from "@/lib/api";
-import { Loading, SeverityBadge, StatusBadge, StudentAvatar, ChartCard, TrustBanner, FactorBar, BandBadge } from "@/components/common";
+import { Loading, SeverityBadge, StatusBadge, StudentAvatar, ChartCard, TrustBanner, FactorBar, BandBadge, ConfidenceBadge } from "@/components/common";
 import { Button } from "@/components/ui/button";
 import { Textarea } from "@/components/ui/textarea";
 
 const ACTIONS = [
-  { key: "acknowledge", label: "Acknowledge", Icon: Check },
-  { key: "expected", label: "Mark as expected behavior", Icon: ThumbsUp },
-  { key: "request_info", label: "Request additional information", Icon: MessageSquarePlus },
+  { key: "expected_behavior", label: "Expected Behavior", Icon: ThumbsUp },
+  { key: "explained_context", label: "Explained by Context", Icon: MessageSquareText },
+  { key: "continue_monitoring", label: "Continue Monitoring", Icon: Eye },
+  { key: "follow_up", label: "Follow-up Meeting", Icon: CalendarClock },
   { key: "escalate", label: "Escalate", Icon: ArrowUpCircle },
-  { key: "dismiss", label: "Dismiss", Icon: XCircle },
 ];
 
 export default function ReviewDetail() {
@@ -32,9 +32,14 @@ export default function ReviewDetail() {
     mutationFn: (text) => api.post(`/reviews/${id}/notes`, { text }),
     onSuccess: () => { qc.invalidateQueries({ queryKey: ["review", id] }); setNote(""); toast.success("Note saved"); },
   });
+  const requestContextMut = useMutation({
+    mutationFn: () => api.post(`/reviews/${id}/request-context`),
+    onSuccess: () => { qc.invalidateQueries({ queryKey: ["review", id] }); toast.success("Context requested from student."); },
+  });
 
   if (isLoading || !r) return <Loading />;
   const sig = r.signal, st = r.student;
+  const context = r.context || sig?.context;
 
   return (
     <div className="space-y-6">
@@ -46,7 +51,12 @@ export default function ReviewDetail() {
         <div className="flex items-center gap-4">
           <StudentAvatar src={r.student_avatar} name={r.student_name} size={56} />
           <div>
-            <div className="flex items-center gap-2 flex-wrap"><h1 className="text-xl font-bold tracking-tight">Signal Review</h1><SeverityBadge severity={r.severity} /><StatusBadge status={r.status} /></div>
+            <div className="flex items-center gap-2 flex-wrap">
+              <h1 className="text-xl font-bold tracking-tight">Signal Review</h1>
+              <SeverityBadge severity={r.severity} />
+              <ConfidenceBadge confidence={sig?.confidence} />
+              <StatusBadge status={r.status} />
+            </div>
             <p className="text-sm text-muted-foreground mt-1">{r.student_name} · {r.signal_type} · {r.course_code} · {r.semester}</p>
           </div>
         </div>
@@ -76,6 +86,25 @@ export default function ReviewDetail() {
               <div className="rounded-lg border border-border bg-muted/20 p-3"><div className="text-xs text-muted-foreground">Recent behavior</div><div className="text-foreground font-medium">Last 3 submissions</div></div>
             </div>
             <Button variant="ghost" size="sm" className="mt-3 text-primary" onClick={() => nav(`/signals/${sig.id}`)} data-testid="view-signal-detail">Open full signal investigation →</Button>
+          </ChartCard>
+
+          <ChartCard testid="review-student-context" title="Student Context" subtitle="Additional information the student has chosen to share">
+            {context ? (
+              <div className="rounded-lg border border-border bg-muted/20 p-3">
+                <p className="text-sm text-foreground leading-relaxed" data-testid="review-context-text">"{context.text}"</p>
+                <p className="text-xs text-muted-foreground mt-2">{context.submitted_at} · {context.status}</p>
+              </div>
+            ) : (
+              <>
+                <p className="text-sm text-muted-foreground" data-testid="review-no-context">
+                  {sig?.context_requested ? "Context has been requested — no response yet." : "No context provided yet."}
+                </p>
+                <Button variant="outline" size="sm" className="gap-2 mt-3" disabled={sig?.context_requested || requestContextMut.isPending}
+                  onClick={() => requestContextMut.mutate()} data-testid="review-request-context-btn">
+                  <MessageSquarePlus className="h-3.5 w-3.5" /> {sig?.context_requested ? "Context requested" : "Request Context"}
+                </Button>
+              </>
+            )}
           </ChartCard>
 
           <ChartCard testid="reviewer-notes" title="Reviewer notes">

@@ -34,9 +34,9 @@ export function DeviationIndex({ index, band, factors, testid = "deviation-index
   return (
     <div data-testid={testid} className="rounded-xl border border-border bg-card p-5">
       <div className="flex items-center justify-between mb-1">
-        <h3 className="text-sm font-semibold">Prototype Behavioral Deviation Index</h3>
+        <h3 className="text-sm font-semibold">Behavioral Change Index (prototype)</h3>
       </div>
-      <p className="text-xs text-muted-foreground mb-4">Not a scientifically validated risk score. Every score shows its contributing factors.</p>
+      <p className="text-xs text-muted-foreground mb-4">Measures how much recent behavior differs from this student's own historical baseline — not a scientifically validated risk score. Every score shows its contributing factors.</p>
       <div className="flex flex-col sm:flex-row items-center gap-6">
         <div className="flex flex-col items-center gap-2">
           <DeviationGauge index={index} band={band} />

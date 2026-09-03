@@ -18,8 +18,12 @@ API = f"{BASE_URL}/api"
 
 @pytest.fixture(scope="module")
 def session():
+    """Educator session — student data management endpoints are educator-only."""
     s = requests.Session()
-    r = s.post(f"{API}/auth/demo", timeout=30)
+    email = f"edu_mgmt_{uuid.uuid4().hex[:10]}@northbridge.test"
+    r = s.post(f"{API}/auth/educator/register", json={
+        "name": "Dr. Data Mgmt", "email": email, "password": "testpass123",
+    }, timeout=30)
     assert r.status_code == 200, r.text
     return s
 

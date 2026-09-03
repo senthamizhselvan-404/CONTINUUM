@@ -5,10 +5,11 @@ import {
   ResponsiveContainer, AreaChart, Area, XAxis, YAxis, CartesianGrid, Tooltip,
   BarChart, Bar, Cell,
 } from "recharts";
-import { Users, Radar, ClipboardCheck, Activity, ArrowRight, ArrowRightLeft, UserPlus, Upload } from "lucide-react";
+import { Users, Radar, ClipboardCheck, Activity, ArrowRight, ArrowRightLeft, UserPlus, Upload, HelpCircle, ChevronDown } from "lucide-react";
 import { AddStudentModal, ImportStudentsModal } from "@/components/StudentDataModals";
 import api from "@/lib/api";
-import { MetricCard, PageHeader, ChartCard, Loading, SeverityBadge, StatusBadge, StudentAvatar, TrustBanner } from "@/components/common";
+import { MetricCard, PageHeader, ChartCard, Loading, SeverityBadge, StatusBadge, StudentAvatar, TrustBanner, BandBadge, EmptyState, BaselineStatusBadge } from "@/components/common";
+import { cn } from "@/lib/utils";
 import { Button } from "@/components/ui/button";
 import { useAuth } from "@/context/AuthContext";
 
@@ -34,18 +35,141 @@ function greeting() {
   return h < 12 ? "Good morning" : h < 18 ? "Good afternoon" : "Good evening";
 }
 
-export default function Dashboard() {
+/* ---------------- Student Demo: personal overview only ---------------- */
+function PersonalDashboard({ data }) {
+  const nav = useNavigate();
+  const [whyOpen, setWhyOpen] = useState(false);
+  const { student, performance_series, recent_signals, signal_count } = data;
+  const firstName = (student?.name || "there").split(" ")[0];
+  const delta = student.index_delta ?? 0;
+  const deltaDir = delta > 0 ? "up" : delta < 0 ? "down" : "flat";
+
+  return (
+    <div className="space-y-6">
+      <PageHeader testid="dashboard-header" title={`${greeting()}, ${firstName}`}
+        subtitle="Your personal behavioral baseline and longitudinal performance — visible only to you.">
+        <Button variant="outline" onClick={() => nav("/signals")} className="gap-2" data-testid="view-signals-btn">
+          My signals <ArrowRight className="h-4 w-4" />
+        </Button>
+      </PageHeader>
+
+      <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
+        <div data-testid="kpi-my-index" className="rounded-xl border border-border bg-card p-4 lg:p-5 hover:border-primary/30 transition-colors">
+          <div className="flex items-center justify-between">
+            <span className="text-xs font-medium uppercase tracking-wider text-muted-foreground">Behavioral Change Index</span>
+            <Activity className="h-4 w-4 text-muted-foreground" />
+          </div>
+          <div className="mt-2 text-3xl font-bold tracking-tight tabular-nums text-foreground">{student.deviation_index}</div>
+          <div className="mt-1 text-xs font-medium text-muted-foreground">{student.status_label}</div>
+          {delta !== 0 && (
+            <div className={cn("mt-1 text-xs font-medium", deltaDir === "up" ? "text-amber-400" : "text-emerald-400")}>
+              {deltaDir === "up" ? "↑" : "↓"} {Math.abs(delta)} points from previous period
+            </div>
+          )}
+          {data.student.change_breakdown?.length > 0 && (
+            <button onClick={() => setWhyOpen((o) => !o)} data-testid="why-did-this-change-btn"
+              className="mt-2 inline-flex items-center gap-1 text-xs text-primary hover:underline">
+              <HelpCircle className="h-3 w-3" /> Why did this change? <ChevronDown className={cn("h-3 w-3 transition-transform", whyOpen && "rotate-180")} />
+            </button>
+          )}
+        </div>
+        <div className="rounded-xl border border-border bg-card p-4 lg:p-5 flex flex-col justify-between">
+          <span className="text-xs font-medium uppercase tracking-wider text-muted-foreground">Current Band</span>
+          <div className="mt-2 flex items-center gap-2 flex-wrap">
+            <BandBadge band={student.band} testid="kpi-my-band" />
+            <BaselineStatusBadge status={student.baseline_status} testid="kpi-my-baseline-status" />
+          </div>
+        </div>
+        <MetricCard testid="kpi-my-signals" label="My Signals" value={signal_count}
+          delta="Personal signals only" icon={Radar} />
+      </div>
+
+      {whyOpen && data.student.change_breakdown?.length > 0 && (
+        <ChartCard testid="behavioral-change-breakdown" title="Behavioral Change Breakdown"
+          subtitle="Measures how much your recent academic behavior differs from your personal baseline, decomposed by contributing factor.">
+          <div className="space-y-2">
+            {data.student.change_breakdown.map((b) => (
+              <div key={b.label} className="flex items-center justify-between text-sm py-1.5 border-b border-border/60 last:border-0">
+                <span className="text-muted-foreground">{b.label}</span>
+                <span className={cn("font-mono font-semibold tabular-nums", b.points > 0 ? "text-amber-400" : "text-muted-foreground")}>
+                  {b.points > 0 ? "+" : ""}{b.points}
+                </span>
+              </div>
+            ))}
+          </div>
+        </ChartCard>
+      )}
+
+      <ChartCard testid="my-performance-trend" title="My Longitudinal Performance"
+        subtitle="Your average grade across semesters — one continuous behavioral profile">
+        <div className="h-72">
+          <ResponsiveContainer width="100%" height="100%">
+            <AreaChart data={performance_series} margin={{ top: 10, right: 8, left: -18, bottom: 0 }}>
+              <defs>
+                <linearGradient id="gPersonal" x1="0" y1="0" x2="0" y2="1">
+                  <stop offset="0%" stopColor="hsl(var(--primary))" stopOpacity={0.35} />
+                  <stop offset="100%" stopColor="hsl(var(--primary))" stopOpacity={0} />
+                </linearGradient>
+              </defs>
+              <CartesianGrid strokeDasharray="3 3" stroke="hsl(var(--border))" vertical={false} />
+              <XAxis dataKey="semester" tick={{ fontSize: 11, fill: "hsl(var(--muted-foreground))" }} axisLine={false} tickLine={false} />
+              <YAxis tick={{ fontSize: 11, fill: "hsl(var(--muted-foreground))" }} axisLine={false} tickLine={false} domain={[0, 100]} />
+              <Tooltip content={<ChartTip />} />
+              <Area type="monotone" dataKey="value" name="Average grade" stroke="hsl(var(--primary))" strokeWidth={2.4} fill="url(#gPersonal)" dot={{ r: 3, fill: "hsl(var(--primary))" }} activeDot={{ r: 5 }} />
+            </AreaChart>
+          </ResponsiveContainer>
+        </div>
+      </ChartCard>
+
+      <ChartCard testid="my-recent-signals" title="My Recent Signals" subtitle="Behavioral changes surfaced on your own record — not determinations of misconduct"
+        action={<Button variant="ghost" size="sm" onClick={() => nav("/signals")} className="gap-1.5 text-primary">View all <ArrowRight className="h-3.5 w-3.5" /></Button>}>
+        {recent_signals.length === 0 ? (
+          <EmptyState title="No signals on your record" description="Your behavioral baseline is currently stable." />
+        ) : (
+          <div className="overflow-x-auto -mx-1">
+            <table className="w-full text-sm">
+              <thead>
+                <tr className="text-left text-xs text-muted-foreground border-b border-border">
+                  <th className="font-medium py-2 px-3">Signal</th>
+                  <th className="font-medium py-2 px-3">Course</th>
+                  <th className="font-medium py-2 px-3">Severity</th>
+                  <th className="font-medium py-2 px-3">Detected</th>
+                  <th className="font-medium py-2 px-3">Status</th>
+                </tr>
+              </thead>
+              <tbody>
+                {recent_signals.map((s) => (
+                  <tr key={s.id} data-testid={`signal-row-${s.id}`} onClick={() => nav(`/signals/${s.id}`)}
+                    className="border-b border-border/60 last:border-0 hover:bg-muted/50 cursor-pointer transition-colors">
+                    <td className="py-2.5 px-3 text-foreground font-medium">{s.signal_type}</td>
+                    <td className="py-2.5 px-3 font-mono text-xs text-muted-foreground">{s.course_code}</td>
+                    <td className="py-2.5 px-3"><SeverityBadge severity={s.severity} /></td>
+                    <td className="py-2.5 px-3 text-muted-foreground whitespace-nowrap">{s.detected}</td>
+                    <td className="py-2.5 px-3"><StatusBadge status={s.status} /></td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        )}
+      </ChartCard>
+
+      <TrustBanner />
+    </div>
+  );
+}
+
+/* ---------------- Educator/institution overview ---------------- */
+function InstitutionDashboard({ data }) {
   const nav = useNavigate();
   const { user } = useAuth();
   const qc = useQueryClient();
   const [activeCat, setActiveCat] = useState(null);
   const [addOpen, setAddOpen] = useState(false);
   const [importOpen, setImportOpen] = useState(false);
-  const { data, isLoading } = useQuery({ queryKey: ["overview"], queryFn: async () => (await api.get("/overview")).data });
   const { data: sstats } = useQuery({ queryKey: ["students-stats"], queryFn: async () => (await api.get("/students-stats")).data });
   const refresh = () => { qc.invalidateQueries({ queryKey: ["students-stats"] }); qc.invalidateQueries({ queryKey: ["overview"] }); qc.invalidateQueries({ queryKey: ["students"] }); };
 
-  if (isLoading || !data) return <Loading />;
   const { stats, signals_over_time, recent_signals, distribution } = data;
   const firstName = (user?.name || "there").split(" ")[0];
 
@@ -224,4 +348,15 @@ export default function Dashboard() {
       <ImportStudentsModal open={importOpen} onOpenChange={setImportOpen} onDone={refresh} />
     </div>
   );
+}
+
+export default function Dashboard() {
+  const { user } = useAuth();
+  const { data, isLoading } = useQuery({ queryKey: ["overview"], queryFn: async () => (await api.get("/overview")).data });
+
+  if (isLoading || !data) return <Loading />;
+
+  return (user?.role === "student" || data.personal)
+    ? <PersonalDashboard data={data} />
+    : <InstitutionDashboard data={data} />;
 }

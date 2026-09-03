@@ -29,11 +29,13 @@ export default function Login() {
         </div>
 
         <div className="max-w-md w-full mx-auto lg:mx-0">
+          <p className="text-[11px] font-semibold uppercase tracking-wider text-primary mb-3">Longitudinal Academic Integrity Intelligence</p>
           <h1 className="text-3xl lg:text-4xl font-bold tracking-tight leading-[1.1]">
             Academic integrity has a memory problem.
           </h1>
           <p className="text-muted-foreground mt-4 text-sm lg:text-base leading-relaxed">
-            Understand behavioral change across the academic journey — not a single submission.
+            Understand behavioral change across the academic journey — not a single submission. CONTINUUM builds longitudinal
+            academic profiles, surfaces meaningful behavioral changes, and gives educators explainable evidence for human review.
           </p>
 
           <div className="mt-9 space-y-3">
@@ -83,6 +85,9 @@ export default function Login() {
             </svg>
             <p className="text-sm text-foreground font-medium leading-relaxed">
               "Continuum doesn't just inspect the submission. It remembers the student."
+            </p>
+            <p className="text-xs text-muted-foreground mt-3 leading-relaxed">
+              We don't replace academic integrity teams. We give them memory.
             </p>
             <div className="mt-5 grid grid-cols-3 gap-3 text-center">
               {[["5", "Semesters"], ["1", "Baseline"], ["∞", "Continuity"]].map(([n, l]) => (

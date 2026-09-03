@@ -169,6 +169,11 @@ def recompute(student: dict, records: list, thresholds: dict) -> dict:
                "performance": round(perf_dev), "longitudinal": round(longitudinal)}
     index = ae.deviation_index(writing_dev, sub_dev, perf_dev, longitudinal)
     band = ae.deviation_band(index)
+    observation_count = len(records)
+    baseline_status = ae.baseline_maturity(observation_count)
+    persistence = len(recent_hours) or len(sem_summaries[-1]["courses"]) or 1
+    agreement = ae.multi_signal_agreement(factors)
+    confidence = ae.calculate_confidence(factors, evidence_count=observation_count, persistence=persistence)
 
     # ---- baseline & descriptors ----------------------------------------
     baseline = {
@@ -210,20 +215,28 @@ def recompute(student: dict, records: list, thresholds: dict) -> dict:
         severity = "High" if index > 70 else "Moderate" if index > 40 else "Low"
         last = sem_summaries[-1]
         course = last["courses"][0] if last["courses"] else {"code": "—", "name": "—"}
+        priority = ae.review_priority(severity, confidence, agreement, persistence)
         signals.append({
             "signal_type": stype, "severity": severity, "status": "New",
             "course_code": course["code"], "course_name": course["name"],
             "semester": last["label"], "semester_term": last["term"],
             "factors": factors, "deviation_index": index, "band": band,
+            "confidence": confidence, "persistence": persistence,
+            "multi_signal_agreement": agreement, "review_priority": priority,
             "explanation": ae.generate_explanation({"factors": factors}),
             "explanation_source": "prototype",
         })
+
+    # "Why did this change?" — proportional point breakdown of the index delta
+    breakdown, breakdown_total = ae.change_breakdown(factors)
+    previous_index = max(0, index - breakdown_total)
 
     return {
         "deviation_index": index, "band": band, "status_label": ae.status_label(index),
         "factors": factors, "baseline": baseline, "writing_features": writing_features,
         "performance": perf_analysis, "submission_behavior": submission_behavior,
-        "semesters": sem_summaries,
+        "semesters": sem_summaries, "baseline_status": baseline_status,
+        "change_breakdown": breakdown, "previous_index": previous_index, "index_delta": breakdown_total,
         "trend": "down" if perf_series[-1] < perf_series[0] else "up" if perf_series[-1] > perf_series[0] else "flat",
         "generated_signals": signals,
     }

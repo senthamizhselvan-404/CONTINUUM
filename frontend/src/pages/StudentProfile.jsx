@@ -7,7 +7,7 @@ import {
 } from "recharts";
 import { ArrowLeft, Clock, PenLine, TrendingDown, Layers, Plus, Upload } from "lucide-react";
 import api from "@/lib/api";
-import { PageHeader, Loading, BandBadge, StudentAvatar, SeverityBadge, StatusBadge, ChartCard, TrustBanner } from "@/components/common";
+import { PageHeader, Loading, BandBadge, StudentAvatar, SeverityBadge, StatusBadge, ChartCard, TrustBanner, BaselineStatusBadge } from "@/components/common";
 import { DeviationIndex } from "@/components/DeviationIndex";
 import { Button } from "@/components/ui/button";
 import { AddRecordModal, UploadRecordsModal } from "@/components/StudentDataModals";
@@ -71,6 +71,7 @@ export default function StudentProfile() {
               <div className="flex items-center gap-2 mt-2 flex-wrap">
                 <span className="text-xs text-muted-foreground">{s.program} · Year {s.year}</span>
                 <BandBadge band={s.band} testid="profile-status-badge" />
+                <BaselineStatusBadge status={s.baseline_status} testid="profile-baseline-status" />
               </div>
             </div>
           </div>
